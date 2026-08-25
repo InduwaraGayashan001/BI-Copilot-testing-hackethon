@@ -105,10 +105,9 @@ function processDisruptionEvent(FlightEvent flightEvent) returns TransientProces
 function requestRebooking(RebookingRequest rebookingRequest) returns RebookingResponse|solace:Error? {
     solace:MessageConsumer replyConsumer = check new (solaceBrokerUrl,
         messageVpn = solaceVpnName,
-        auth = {
-            username: solaceUsername,
-            password: solacePassword
-        },
+        auth = solaceAuthConfig,
+        secureSocket = solaceSecureSocket,
+        retryConfig = solaceRetryConfig,
         subscriptionConfig = {
             durability: solace:TEMPORARY
         }
