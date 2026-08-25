@@ -10,3 +10,6 @@ configurable int servicePort = 8090;
 // Disruption queue consumption configuration.
 configurable string disruptionsQueueName = "AIRLINE.OPS.DISRUPTIONS";
 configurable int disruptionsTransportWindowSize = 10;
+
+// Passenger rebooking request-reply configuration.
+configurable decimal rebookingReplyTimeout = 10.0;

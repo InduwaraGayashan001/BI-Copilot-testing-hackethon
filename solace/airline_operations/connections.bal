@@ -15,3 +15,11 @@ listener solace:Listener disruptionsListener = check new (solaceBrokerUrl,
         password: solacePassword
     }
 );
+
+listener solace:Listener rebookingListener = check new (solaceBrokerUrl,
+    messageVpn = solaceVpnName,
+    auth = {
+        username: solaceUsername,
+        password: solacePassword
+    }
+);

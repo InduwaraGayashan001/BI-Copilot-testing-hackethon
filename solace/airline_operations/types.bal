@@ -84,3 +84,65 @@ public type TransientProcessingError distinct error;
 # Represents a non-retryable failure encountered while processing a disruption event. The message
 # should be negatively acknowledged without requeue so that it is not redelivered.
 public type PermanentProcessingError distinct error;
+
+# Represents a passenger rebooking request submitted by a client.
+#
+# + passengerId - Unique identifier of the passenger to rebook
+# + originalFlightNumber - Flight number the passenger was originally booked on
+# + carrierCode - Carrier (airline) code operating the original flight
+# + reason - Reason for the rebooking request
+public type RebookingRequest record {|
+    string passengerId;
+    string originalFlightNumber;
+    string carrierCode;
+    string reason;
+|};
+
+# Represents the rebooking response published back to the requester.
+#
+# + passengerId - Unique identifier of the rebooked passenger
+# + originalFlightNumber - Flight number the passenger was originally booked on
+# + newFlightNumber - Flight number the passenger has been rebooked onto
+# + status - Outcome of the rebooking attempt
+public type RebookingResponse record {|
+    string passengerId;
+    string originalFlightNumber;
+    string newFlightNumber;
+    string status;
+|};
+
+# Represents a rebooking request message consumed by the responder, narrowed so that the
+# `RebookingRequest` payload is data-bound directly instead of being delivered as raw `anydata`.
+#
+# + payload - The rebooking request carried by the message
+public type RebookingRequestMessage record {|
+    *solace:Message;
+    RebookingRequest payload;
+|};
+
+# Represents a rebooking reply message received by the requester, narrowed so that the
+# `RebookingResponse` payload is data-bound directly instead of being delivered as raw `anydata`.
+#
+# + payload - The rebooking response carried by the message
+public type RebookingReplyMessage record {|
+    *solace:Message;
+    RebookingResponse payload;
+|};
+
+# Represents the response returned when a rebooking request is fulfilled.
+public type RebookingAccepted record {|
+    *http:Ok;
+    RebookingResponse body;
+|};
+
+# Represents the response returned when no rebooking reply is received within the configured timeout.
+public type RebookingTimeout record {|
+    *http:GatewayTimeout;
+    ErrorDetail body;
+|};
+
+# Represents the response returned when the rebooking request could not be published or processed.
+public type RebookingError record {|
+    *http:InternalServerError;
+    ErrorDetail body;
+|};

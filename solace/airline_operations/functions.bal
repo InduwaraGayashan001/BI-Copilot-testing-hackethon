@@ -1,4 +1,14 @@
+import ballerina/uuid;
 import ballerinax/solace;
+
+# Builds the hierarchical Solace topic name for a rebooking request of the form
+# `airline/rebooking/request/{carrierCode}`.
+#
+# + carrierCode - The carrier code to derive the topic for
+# + return - The hierarchical topic name
+function buildRebookingRequestTopic(string carrierCode) returns string {
+    return string `airline/rebooking/request/${carrierCode}`;
+}
 
 # Builds the hierarchical Solace topic name for a flight event of the form
 # `airline/ops/{carrierCode}/{departureAirport}/{eventType}`.
@@ -80,4 +90,73 @@ function processDisruptionEvent(FlightEvent flightEvent) returns TransientProces
 
     // Downstream disruption handling (e.g. rebooking, notifications) would be performed here.
     // A failure to reach a downstream dependency is treated as transient and retried via requeue.
+}
+
+# Publishes a passenger rebooking request onto the request topic hierarchy and waits for the
+# reply on a dedicated temporary queue.
+#
+# A temporary queue consumer is created first so that its broker-generated destination name can be
+# resolved and used as the `replyTo` address before the request is published, guaranteeing the
+# reply-to destination is correct before any message has been received.
+#
+# + rebookingRequest - The passenger rebooking request to publish
+# + return - The rebooking response on success, `()` if no reply arrived within the configured
+# timeout, or a `solace:Error` if publishing or consuming fails
+function requestRebooking(RebookingRequest rebookingRequest) returns RebookingResponse|solace:Error? {
+    solace:MessageConsumer replyConsumer = check new (solaceBrokerUrl,
+        messageVpn = solaceVpnName,
+        auth = {
+            username: solaceUsername,
+            password: solacePassword
+        },
+        subscriptionConfig = {
+            durability: solace:TEMPORARY
+        }
+    );
+
+    string replyQueueName = replyConsumer->destinationName();
+    string correlationId = uuid:createRandomUuid();
+    string topicName = buildRebookingRequestTopic(rebookingRequest.carrierCode);
+
+    solace:Message requestMessage = {
+        payload: rebookingRequest,
+        deliveryMode: solace:PERSISTENT,
+        correlationId,
+        replyTo: {queueName: replyQueueName}
+    };
+
+    solace:Error? sendResult = solaceProducer->send(requestMessage, {topicName});
+    if sendResult is solace:Error {
+        check replyConsumer->close();
+        return sendResult;
+    }
+
+    RebookingReplyMessage|solace:Error? replyResult = replyConsumer->receive(rebookingReplyTimeout);
+    check replyConsumer->close();
+
+    if replyResult is solace:Error {
+        return replyResult;
+    }
+
+    if replyResult is () {
+        return ();
+    }
+
+    return replyResult.payload;
+}
+
+# Resolves a passenger rebooking request into a rebooking response.
+#
+# + rebookingRequest - The passenger rebooking request to resolve
+# + return - The rebooking response describing the outcome
+function resolveRebooking(RebookingRequest rebookingRequest) returns RebookingResponse {
+    // Downstream rebooking logic (e.g. inventory lookup, seat assignment) would be performed here.
+    string newFlightNumber = string `${rebookingRequest.originalFlightNumber}-R`;
+
+    return {
+        passengerId: rebookingRequest.passengerId,
+        originalFlightNumber: rebookingRequest.originalFlightNumber,
+        newFlightNumber,
+        status: "CONFIRMED"
+    };
 }

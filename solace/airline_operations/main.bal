@@ -35,4 +35,35 @@ service /ops on new http:Listener(servicePort) {
             }
         };
     }
+
+    # Publishes a passenger rebooking request and waits for the responder's reply.
+    #
+    # + rebookingRequest - The passenger rebooking request to publish
+    # + return - The rebooking response on success, a gateway timeout if no reply arrives in time,
+    # or an error response on failure
+    resource function post rebooking(@http:Payload RebookingRequest rebookingRequest)
+            returns RebookingAccepted|RebookingTimeout|RebookingError {
+
+        RebookingResponse|solace:Error? result = requestRebooking(rebookingRequest);
+
+        if result is solace:Error {
+            return <RebookingError>{
+                body: {
+                    message: string `Failed to process rebooking request: ${result.message()}`
+                }
+            };
+        }
+
+        if result is () {
+            return <RebookingTimeout>{
+                body: {
+                    message: "Timed out waiting for a rebooking response"
+                }
+            };
+        }
+
+        return <RebookingAccepted>{
+            body: result
+        };
+    }
 }
