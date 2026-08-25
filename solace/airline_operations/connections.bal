@@ -7,3 +7,11 @@ final solace:MessageProducer solaceProducer = check new (solaceBrokerUrl,
         password: solacePassword
     }
 );
+
+listener solace:Listener disruptionsListener = check new (solaceBrokerUrl,
+    messageVpn = solaceVpnName,
+    auth = {
+        username: solaceUsername,
+        password: solacePassword
+    }
+);

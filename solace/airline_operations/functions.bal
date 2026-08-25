@@ -61,3 +61,23 @@ function publishFlightEvent(FlightEvent flightEvent) returns string|solace:Error
     check solaceProducer->send(message, {topicName});
     return topicName;
 }
+
+# Processes a disruption event (a DELAY or CANCELLATION flight event) consumed from the
+# guaranteed disruptions queue.
+#
+# + flightEvent - The disruption event to process
+# + return - A `TransientProcessingError` if the failure is retryable, a `PermanentProcessingError`
+# if it is not, or `()` on success
+function processDisruptionEvent(FlightEvent flightEvent) returns TransientProcessingError|PermanentProcessingError? {
+    if flightEvent.eventType != DELAY && flightEvent.eventType != CANCELLATION {
+        return error PermanentProcessingError(string `Unsupported disruption event type: ${flightEvent.eventType}`);
+    }
+
+    int? delayMinutes = flightEvent?.delayMinutes;
+    if flightEvent.eventType == DELAY && delayMinutes is () {
+        return error PermanentProcessingError("delayMinutes is required when eventType is DELAY");
+    }
+
+    // Downstream disruption handling (e.g. rebooking, notifications) would be performed here.
+    // A failure to reach a downstream dependency is treated as transient and retried via requeue.
+}

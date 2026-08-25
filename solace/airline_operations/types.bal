@@ -1,4 +1,5 @@
 import ballerina/http;
+import ballerinax/solace;
 
 # Represents the category of a flight operational event.
 public enum EventType {
@@ -66,3 +67,20 @@ public type FlightEventPublishError record {|
     *http:InternalServerError;
     ErrorDetail body;
 |};
+
+# Represents a guaranteed message consumed from the disruptions queue, narrowed so that the
+# `FlightEvent` payload is data-bound directly instead of being delivered as raw `anydata`.
+#
+# + payload - The flight event carried by the message
+public type DisruptionEventMessage record {|
+    *solace:Message;
+    FlightEvent payload;
+|};
+
+# Represents a retryable failure encountered while processing a disruption event. The message
+# should be negatively acknowledged with requeue so that it is redelivered.
+public type TransientProcessingError distinct error;
+
+# Represents a non-retryable failure encountered while processing a disruption event. The message
+# should be negatively acknowledged without requeue so that it is not redelivered.
+public type PermanentProcessingError distinct error;
