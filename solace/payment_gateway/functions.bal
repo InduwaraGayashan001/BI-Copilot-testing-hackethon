@@ -1,13 +1,9 @@
 import ballerina/time;
 import ballerinax/solace;
 
-# In-memory audit trail of processed payment instructions.
+# In-memory audit trail of processed payment instructions. The audit write is an append-only log
+# and no longer needs to be atomic with the publish to `PAYMENTS.INSTRUCTIONS.IN`.
 final table<AuditEntry> key(instructionId) auditEntries = table [];
-
-# In-memory set of sequence numbers already settled, used to suppress duplicate processing of a
-# payment instruction that is redelivered (for example, after a rollback of the settlement
-# producer's transaction).
-final map<boolean> settledSequenceNumbers = {};
 
 # Builds an audit entry for a payment instruction, timestamped with the current UTC time.
 #
@@ -24,7 +20,7 @@ function buildAuditEntry(PaymentInstruction paymentInstruction) returns AuditEnt
     recordedTime: time:utcToString(time:utcNow())
 };
 
-# Records the audit entry for a payment instruction in the in-memory audit store.
+# Records the audit entry for a payment instruction in the append-only in-memory audit log.
 #
 # + auditEntry - The audit entry to record
 function writeAuditEntry(AuditEntry auditEntry) {
@@ -32,12 +28,14 @@ function writeAuditEntry(AuditEntry auditEntry) {
 }
 
 # Publishes a payment instruction onto the guaranteed `PAYMENTS.INSTRUCTIONS.IN` queue and records
-# its audit entry within a single transacted producer session, committing only if both the publish
-# and the audit write succeed, and rolling back otherwise.
+# its audit entry as an independent, best-effort append to the audit log.
+#
+# The publish and the audit write are no longer coupled by a transaction: the publish is the
+# source of truth for the instruction, and the audit write is fire-and-forget append-only logging
+# that is not rolled back if it fails after a successful publish.
 #
 # + paymentInstruction - The payment instruction to process
-# + return - `()` if both the publish and the audit write succeeded and were committed, or a
-# `solace:Error` if either step failed and the transaction was rolled back
+# + return - `()` if the publish succeeded, or a `solace:Error` if the publish failed
 function processPaymentInstruction(PaymentInstruction paymentInstruction) returns solace:Error? {
     solace:Message message = {
         payload: paymentInstruction,
@@ -45,21 +43,10 @@ function processPaymentInstruction(PaymentInstruction paymentInstruction) return
         correlationId: paymentInstruction.instructionId
     };
 
-    solace:Error? sendResult = paymentInstructionProducer->send(message, {queueName: paymentInstructionsQueueName});
-    if sendResult is solace:Error {
-        check paymentInstructionProducer->'rollback();
-        return sendResult;
-    }
+    check paymentInstructionProducer->send(message, {queueName: paymentInstructionsQueueName});
 
     AuditEntry auditEntry = buildAuditEntry(paymentInstruction);
     writeAuditEntry(auditEntry);
-
-    solace:Error? commitResult = paymentInstructionProducer->'commit();
-    if commitResult is solace:Error {
-        check paymentInstructionProducer->'rollback();
-        AuditEntry|() removedEntry = auditEntries.removeIfHasKey(paymentInstruction.instructionId);
-        return commitResult;
-    }
 }
 
 # Validates a payment instruction consumed from `PAYMENTS.INSTRUCTIONS.IN`.
@@ -99,28 +86,20 @@ function buildSettledPaymentInstruction(PaymentInstruction paymentInstruction) r
     paymentScheme: paymentInstruction.paymentScheme
 };
 
-# Checks whether a payment instruction message has already been settled, based on its broker
-# assigned sequence number.
+# Checks whether a payment instruction message is being redelivered, based on the broker-reported
+# `deliveryCount`. A `deliveryCount` greater than one means this message was previously delivered
+# and left unacknowledged - most likely because the consumer crashed or disconnected after
+# publishing to `PAYMENTS.SETTLEMENT.OUT`/the DLQ but before acknowledging it - so it must not be
+# republished a second time.
 #
 # + message - The payment instruction message received from `PAYMENTS.INSTRUCTIONS.IN`
-# + return - `true` if a message with the same sequence number has already been settled
-function isDuplicateMessage(PaymentInstructionMessage message) returns boolean {
-    int? sequenceNumber = message?.sequenceNumber;
-    if sequenceNumber is () {
+# + return - `true` if this delivery is a redelivery of a previously delivered message
+function isRedelivery(PaymentInstructionMessage message) returns boolean {
+    int? deliveryCount = message?.deliveryCount;
+    if deliveryCount is () {
         return false;
     }
-    return settledSequenceNumbers.hasKey(sequenceNumber.toString());
-}
-
-# Records a payment instruction message's sequence number as settled, so a subsequent redelivery
-# of the same message is recognized and suppressed.
-#
-# + message - The payment instruction message that was settled
-function markMessageSettled(PaymentInstructionMessage message) {
-    int? sequenceNumber = message?.sequenceNumber;
-    if sequenceNumber is int {
-        settledSequenceNumbers[sequenceNumber.toString()] = true;
-    }
+    return deliveryCount > 1;
 }
 
 # Determines whether a payment instruction message has exceeded the configured maximum delivery
@@ -137,8 +116,7 @@ function isPoisonMessage(PaymentInstructionMessage message) returns boolean {
     return deliveryCount > maxDeliveryCount;
 }
 
-# Publishes a message onto the dead letter queue within the settlement producer's transacted
-# session.
+# Publishes a message onto the dead letter queue.
 #
 # + paymentInstruction - The payment instruction to dead-letter
 # + reason - Human readable description of why the instruction was dead-lettered
@@ -155,26 +133,29 @@ function publishToDlq(PaymentInstruction paymentInstruction, string reason) retu
     check settlementProducer->send(dlqMessage, {queueName: paymentInstructionsDlqName});
 }
 
-# Processes a payment instruction message consumed from `PAYMENTS.INSTRUCTIONS.IN`: suppresses
-# duplicates, routes poison messages (those whose delivery count has exceeded `maxDeliveryCount`)
-# and instructions that fail validation to the dead letter queue, and otherwise republishes a
-# settled instruction onto `PAYMENTS.SETTLEMENT.OUT`.
+# Processes a payment instruction message consumed from `PAYMENTS.INSTRUCTIONS.IN`: skips
+# republishing on a redelivery (detected via `deliveryCount`), routes poison messages (those whose
+# delivery count has exceeded `maxDeliveryCount`) and instructions that fail validation to the dead
+# letter queue, and otherwise republishes a settled instruction onto `PAYMENTS.SETTLEMENT.OUT`,
+# each carrying the instruction ID as its correlation ID. The source message is only acknowledged
+# once the outbound publish (or the redelivery check) has completed successfully.
 #
-# The settlement producer's transaction is committed first so the outbound publish (to the
-# settlement queue or the DLQ) is made durable, and only then is the consumer's transaction
-# committed via `caller->commit` to remove the source message from `PAYMENTS.INSTRUCTIONS.IN`. If
-# the producer commit fails, both transactions are rolled back so the instruction is redelivered.
+# This is at-least-once processing, not exactly-once: the outbound publish and the ack of the
+# source message are two separate, uncoordinated operations, so a crash after the publish but
+# before the ack causes a redelivery. That redelivery is recognized via `deliveryCount` so it is
+# not republished again, but the ack is retried.
 #
 # + message - The payment instruction message received from `PAYMENTS.INSTRUCTIONS.IN`
-# + caller - Handle used to commit or roll back the consumer's transaction
-# + return - A `solace:Error` if a commit or rollback operation itself fails
+# + caller - Handle used to acknowledge or negatively acknowledge the message
+# + return - A `solace:Error` if the outbound publish fails (the message is then negatively
+# acknowledged and requeued), or if acknowledgement/negative-acknowledgement itself fails
 function processSettlement(PaymentInstructionMessage message, solace:Caller caller) returns solace:Error? {
     PaymentInstruction paymentInstruction = message.payload;
 
-    if isDuplicateMessage(message) {
-        // Already settled on a prior delivery; discard this redelivery by committing the consume
-        // without republishing again.
-        check caller->'commit();
+    if isRedelivery(message) {
+        // Already published to the settlement queue or the DLQ on a prior delivery; this
+        // redelivery only needs to be acknowledged, not republished again.
+        check caller->ack(message);
         return;
     }
 
@@ -201,28 +182,19 @@ function processSettlement(PaymentInstructionMessage message, solace:Caller call
     return finalizeSettlement(sendResult, message, caller);
 }
 
-# Commits or rolls back the settlement producer's transaction and the consumer's transaction
-# together, based on the outcome of the producer-side publish (to the settlement queue or the
-# DLQ).
+# Acknowledges or negatively acknowledges the source message based on the outcome of the
+# producer-side publish (to the settlement queue or the DLQ).
 #
 # + publishResult - The outcome of the settlement producer's publish operation
 # + message - The payment instruction message being settled
-# + caller - Handle used to commit or roll back the consumer's transaction
-# + return - A `solace:Error` if a commit or rollback operation itself fails
+# + caller - Handle used to acknowledge or negatively acknowledge the message
+# + return - A `solace:Error` if acknowledgement/negative-acknowledgement itself fails
 function finalizeSettlement(solace:Error? publishResult, PaymentInstructionMessage message, solace:Caller caller)
         returns solace:Error? {
     if publishResult is solace:Error {
-        check settlementProducer->'rollback();
-        check caller->'rollback();
+        check caller->nack(message, requeue = true);
         return publishResult;
     }
 
-    solace:Error? producerCommitResult = settlementProducer->'commit();
-    if producerCommitResult is solace:Error {
-        check caller->'rollback();
-        return producerCommitResult;
-    }
-
-    check caller->'commit();
-    markMessageSettled(message);
+    check caller->ack(message);
 }

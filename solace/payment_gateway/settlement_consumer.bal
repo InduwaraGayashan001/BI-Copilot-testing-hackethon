@@ -1,13 +1,21 @@
 import ballerina/log;
 import ballerinax/solace;
 
-# Consumes payment instructions from the durable queue `PAYMENTS.INSTRUCTIONS.IN` within a
-# transacted session, validates each instruction, and republishes it onto
-# `PAYMENTS.SETTLEMENT.OUT` (or the dead letter queue for poison/invalid instructions). See
-# `processSettlement` in functions.bal for how the consume and the outbound publish - each backed
-# by its own transacted session in this connector - are coordinated to settle together.
+# Consumes payment instructions from the durable queue `PAYMENTS.INSTRUCTIONS.IN` with client
+# acknowledgement, validates each instruction, and republishes it onto `PAYMENTS.SETTLEMENT.OUT`
+# (or the dead letter queue for poison/invalid instructions) before acknowledging the source
+# message. See `processSettlement` in functions.bal.
+#
+# This gives at-least-once delivery rather than the exactly-once-per-transaction semantics of a
+# transacted session: the outbound publish and the ack of the source message are two separate,
+# uncoordinated steps, so a crash between them leaves the instruction unacknowledged and it is
+# redelivered on reconnect/restart. A redelivery is detected via the message's `deliveryCount`
+# (see `isRedelivery` in functions.bal) rather than the previous sequence-number dedup, and the
+# settlement/DLQ publish is skipped on that redelivery so it is not republished a second time -
+# only the ack is repeated.
 @solace:ServiceConfig {
-    queueName: paymentInstructionsQueueName
+    queueName: paymentInstructionsQueueName,
+    ackMode: solace:CLIENT_ACK
 }
 service on settlementListener {
 
@@ -15,14 +23,14 @@ service on settlementListener {
     #
     # + message - The payment instruction message, with the payload data-bound into
     # `PaymentInstruction`
-    # + caller - Handle used to commit or roll back the consumer's transaction
-    # + return - A `solace:Error` if a commit/rollback operation itself fails
+    # + caller - Handle used to acknowledge or negatively acknowledge the message
+    # + return - A `solace:Error` if acknowledgement/negative-acknowledgement itself fails
     remote function onMessage(PaymentInstructionMessage message, solace:Caller caller) returns solace:Error? {
         PaymentInstruction paymentInstruction = message.payload;
 
         solace:Error? result = processSettlement(message, caller);
         if result is solace:Error {
-            log:printError("Failed to settle payment instruction, transaction rolled back",
+            log:printError("Failed to settle payment instruction, requeuing",
                     instructionId = paymentInstruction.instructionId, 'error = result);
             return result;
         }
