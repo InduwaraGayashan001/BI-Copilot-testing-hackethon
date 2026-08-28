@@ -1,6 +1,7 @@
 import ballerinax/kafka;
 
 // Represents an order event consumed from the `orders.created` Kafka topic.
+// The upstream event now carries the customer's tier, email, and country directly.
 public type OrderEvent record {|
     string orderId;
     string customerId;
@@ -8,6 +9,9 @@ public type OrderEvent record {|
     string currency;
     int itemCount;
     string channel;
+    string customerTier;
+    string customerEmail;
+    string customerCountry;
 |};
 
 // Represents a Kafka consumer record whose value is bound to the `OrderEvent` type.
@@ -16,14 +20,7 @@ public type OrderEventConsumerRecord record {|
     OrderEvent value;
 |};
 
-// Represents customer attributes fetched from the MySQL `customers` table.
-public type CustomerInfo record {|
-    string tier;
-    string email;
-    string country;
-|};
-
-// Represents an order event enriched with customer information, ready for publishing.
+// Represents an order event ready for publishing to the enriched topic.
 public type EnrichedOrder record {|
     string orderId;
     string customerId;
@@ -36,10 +33,6 @@ public type EnrichedOrder record {|
     string customerCountry;
 |};
 
-// Error raised when an order event payload is structurally invalid and must be
-// routed straight to the DLQ without any retry attempts.
+// Error raised when an order event payload is structurally invalid (including
+// missing customer fields) and must be routed straight to the DLQ.
 public type InvalidOrderEventError distinct error;
-
-// Error raised when enrichment or publishing fails due to a transient issue
-// and should be retried with exponential backoff before falling back to the DLQ.
-public type RetryableProcessingError distinct error;

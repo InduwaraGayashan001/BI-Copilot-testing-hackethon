@@ -34,17 +34,18 @@ service kafka:Service on orderKafkaListener {
     }
 }
 
-// Handles a single order event record end-to-end: malformed payloads are routed
-// straight to the DLQ, valid ones are enriched and published with retries, and any
-// exhausted retries fall back to the DLQ as well. A single bad record never
-// prevents the rest of the batch, or the batch commit, from proceeding.
+// Handles a single order event record end-to-end: malformed payloads (including
+// ones missing the customer fields) are routed straight to the DLQ, and any
+// publish failure for a valid event also falls straight back to the DLQ since
+// there is nothing transient left to retry. A single bad record never prevents
+// the rest of the batch, or the batch commit, from proceeding.
 function handleOrderEventRecord(OrderEventConsumerRecord orderEventRecord) {
     OrderEvent orderEvent = orderEventRecord.value;
     byte[] rawValue = orderEvent.toJsonString().toBytes();
 
     InvalidOrderEventError? validationError = validateOrderEvent(orderEvent);
     if validationError is InvalidOrderEventError {
-        log:printWarn("Order event failed validation, routing to DLQ without retry",
+        log:printWarn("Order event failed validation, routing to DLQ",
                 orderId = orderEvent.orderId, 'error = validationError);
         error? dlqResult = publishToDlq(rawValue, validationError.message(), orderEvent.orderId);
         if dlqResult is error {
@@ -54,11 +55,12 @@ function handleOrderEventRecord(OrderEventConsumerRecord orderEventRecord) {
         return;
     }
 
-    error? processResult = enrichAndPublishWithRetry(orderEvent);
-    if processResult is error {
-        log:printError("Order event enrichment/publish failed after retries, routing to DLQ",
-                'error = processResult, orderId = orderEvent.orderId);
-        error? dlqResult = publishToDlq(rawValue, processResult.message(), orderEvent.orderId);
+    EnrichedOrder enrichedOrder = toEnrichedOrder(orderEvent);
+    error? publishResult = publishEnrichedOrder(enrichedOrder);
+    if publishResult is error {
+        log:printError("Failed to publish enriched order, routing to DLQ",
+                'error = publishResult, orderId = orderEvent.orderId);
+        error? dlqResult = publishToDlq(rawValue, publishResult.message(), orderEvent.orderId);
         if dlqResult is error {
             log:printError("Failed to route failed order event to DLQ", 'error = dlqResult,
                     orderId = orderEvent.orderId);

@@ -1,12 +1,11 @@
-import ballerina/lang.runtime;
 import ballerina/log;
-import ballerina/sql;
 import ballerinax/kafka;
 
 const string ORDERS_ENRICHED_TOPIC = "orders.enriched";
 const string ORDERS_DLQ_TOPIC = "orders.dlq";
 
-// Validates the structural integrity of an order event. Returns an
+// Validates the structural integrity of an order event, including the customer
+// fields that must now be present on the event itself. Returns an
 // `InvalidOrderEventError` when the payload is malformed and must not be retried.
 function validateOrderEvent(OrderEvent orderEvent) returns InvalidOrderEventError? {
     if orderEvent.orderId.trim().length() == 0 {
@@ -29,36 +28,30 @@ function validateOrderEvent(OrderEvent orderEvent) returns InvalidOrderEventErro
     if orderEvent.channel.trim().length() == 0 {
         return error InvalidOrderEventError("Order event is missing channel", orderId = orderEvent.orderId);
     }
+    if orderEvent.customerTier.trim().length() == 0 {
+        return error InvalidOrderEventError("Order event is missing customerTier", orderId = orderEvent.orderId);
+    }
+    if orderEvent.customerEmail.trim().length() == 0 {
+        return error InvalidOrderEventError("Order event is missing customerEmail", orderId = orderEvent.orderId);
+    }
+    if orderEvent.customerCountry.trim().length() == 0 {
+        return error InvalidOrderEventError("Order event is missing customerCountry", orderId = orderEvent.orderId);
+    }
     return;
 }
 
-// Fetches customer tier, email, and country from the MySQL `customers` table.
-function fetchCustomerInfo(string customerId) returns CustomerInfo|error {
-    sql:ParameterizedQuery query = `SELECT tier, email, country FROM customers WHERE customer_id = ${customerId}`;
-    CustomerInfo|sql:Error customerInfo = customerDbClient->queryRow(query);
-    if customerInfo is sql:Error {
-        return error RetryableProcessingError("Failed to fetch customer information", customerInfo,
-                customerId = customerId);
-    }
-    return customerInfo;
-}
-
-// Enriches an order event with customer tier, email, and country.
-function enrichOrderEvent(OrderEvent orderEvent) returns EnrichedOrder|error {
-    CustomerInfo customerInfo = check fetchCustomerInfo(orderEvent.customerId);
-    EnrichedOrder enrichedOrder = {
-        orderId: orderEvent.orderId,
-        customerId: orderEvent.customerId,
-        orderAmount: orderEvent.orderAmount,
-        currency: orderEvent.currency,
-        itemCount: orderEvent.itemCount,
-        channel: orderEvent.channel,
-        customerTier: customerInfo.tier,
-        customerEmail: customerInfo.email,
-        customerCountry: customerInfo.country
-    };
-    return enrichedOrder;
-}
+// Maps an order event to its enriched form using the customer fields carried on the event.
+function toEnrichedOrder(OrderEvent orderEvent) returns EnrichedOrder => {
+    orderId: orderEvent.orderId,
+    customerId: orderEvent.customerId,
+    orderAmount: orderEvent.orderAmount,
+    currency: orderEvent.currency,
+    itemCount: orderEvent.itemCount,
+    channel: orderEvent.channel,
+    customerTier: orderEvent.customerTier,
+    customerEmail: orderEvent.customerEmail,
+    customerCountry: orderEvent.customerCountry
+};
 
 // Publishes the enriched order to the `orders.enriched` topic.
 function publishEnrichedOrder(EnrichedOrder enrichedOrder) returns error? {
@@ -68,52 +61,8 @@ function publishEnrichedOrder(EnrichedOrder enrichedOrder) returns error? {
         value: enrichedOrder.toJson().toJsonString().toBytes()
     });
     if sendResult is kafka:Error {
-        return error RetryableProcessingError("Failed to publish enriched order", sendResult,
-                orderId = enrichedOrder.orderId);
+        return sendResult;
     }
-    return;
-}
-
-// Enriches and publishes a single order event, retrying transient failures with
-// exponential backoff up to `maxRetryAttempts` times.
-function enrichAndPublishWithRetry(OrderEvent orderEvent) returns error? {
-    decimal currentDelaySeconds = initialRetryDelaySeconds;
-    int attempt = 1;
-    while true {
-        EnrichedOrder|error enrichResult = enrichOrderEvent(orderEvent);
-        if enrichResult is EnrichedOrder {
-            error? publishResult = publishEnrichedOrder(enrichResult);
-            if publishResult is () {
-                return;
-            }
-            error? retryOutcome = handleRetryOutcome(orderEvent.orderId, publishResult, attempt, currentDelaySeconds);
-            if retryOutcome is error {
-                return retryOutcome;
-            }
-        } else {
-            error? retryOutcome = handleRetryOutcome(orderEvent.orderId, enrichResult, attempt, currentDelaySeconds);
-            if retryOutcome is error {
-                return retryOutcome;
-            }
-        }
-        attempt += 1;
-        if currentDelaySeconds * 2d < maxRetryDelaySeconds {
-            currentDelaySeconds = currentDelaySeconds * 2d;
-        } else {
-            currentDelaySeconds = maxRetryDelaySeconds;
-        }
-    }
-}
-
-// Decides whether to retry or give up, based on the current attempt count.
-// Returns `()` to signal a retry should happen, or the terminal error otherwise.
-function handleRetryOutcome(string orderId, error failure, int attempt, decimal delaySeconds) returns error? {
-    if attempt >= maxRetryAttempts {
-        return failure;
-    }
-    log:printWarn("Retrying order enrichment/publish after failure", orderId = orderId,
-            attempt = attempt, nextDelaySeconds = delaySeconds, 'error = failure);
-    runtime:sleep(delaySeconds);
     return;
 }
 

@@ -7,7 +7,10 @@ function buildValidOrderEvent() returns OrderEvent => {
     orderAmount: 149.99d,
     currency: "USD",
     itemCount: 3,
-    channel: "web"
+    channel: "web",
+    customerTier: "GOLD",
+    customerEmail: "customer@example.com",
+    customerCountry: "US"
 };
 
 @test:Config {}
@@ -72,19 +75,40 @@ function testValidateOrderEventRejectsMissingChannel() {
 }
 
 @test:Config {}
-function testHandleRetryOutcomeReturnsNilWhenAttemptsRemain() {
-    error simulatedFailure = error("transient failure");
-    error? retryOutcome = handleRetryOutcome("ORD-1001", simulatedFailure, 1, 0.01d);
-    test:assertTrue(retryOutcome is (), msg = "Should signal a retry when attempts remain");
+function testValidateOrderEventRejectsMissingCustomerTier() {
+    OrderEvent orderEvent = buildValidOrderEvent();
+    orderEvent.customerTier = "";
+    InvalidOrderEventError? validationError = validateOrderEvent(orderEvent);
+    test:assertTrue(validationError is InvalidOrderEventError, msg = "Missing customerTier should fail validation");
 }
 
 @test:Config {}
-function testHandleRetryOutcomeReturnsFailureWhenAttemptsExhausted() {
-    error simulatedFailure = error("transient failure");
-    error? retryOutcome = handleRetryOutcome("ORD-1001", simulatedFailure, maxRetryAttempts, 0.01d);
-    test:assertTrue(retryOutcome is error, msg = "Should give up once max attempts are reached");
-    if retryOutcome is error {
-        test:assertEquals(retryOutcome.message(), "transient failure",
-                msg = "The original failure should be propagated once retries are exhausted");
-    }
+function testValidateOrderEventRejectsMissingCustomerEmail() {
+    OrderEvent orderEvent = buildValidOrderEvent();
+    orderEvent.customerEmail = "  ";
+    InvalidOrderEventError? validationError = validateOrderEvent(orderEvent);
+    test:assertTrue(validationError is InvalidOrderEventError, msg = "Missing customerEmail should fail validation");
+}
+
+@test:Config {}
+function testValidateOrderEventRejectsMissingCustomerCountry() {
+    OrderEvent orderEvent = buildValidOrderEvent();
+    orderEvent.customerCountry = "";
+    InvalidOrderEventError? validationError = validateOrderEvent(orderEvent);
+    test:assertTrue(validationError is InvalidOrderEventError,
+            msg = "Missing customerCountry should fail validation");
+}
+
+@test:Config {}
+function testToEnrichedOrderMapsAllFieldsFromEvent() {
+    OrderEvent orderEvent = buildValidOrderEvent();
+    EnrichedOrder enrichedOrder = toEnrichedOrder(orderEvent);
+    test:assertEquals(enrichedOrder.orderId, orderEvent.orderId, msg = "orderId should be carried over");
+    test:assertEquals(enrichedOrder.customerId, orderEvent.customerId, msg = "customerId should be carried over");
+    test:assertEquals(enrichedOrder.customerTier, orderEvent.customerTier,
+            msg = "customerTier should be carried over");
+    test:assertEquals(enrichedOrder.customerEmail, orderEvent.customerEmail,
+            msg = "customerEmail should be carried over");
+    test:assertEquals(enrichedOrder.customerCountry, orderEvent.customerCountry,
+            msg = "customerCountry should be carried over");
 }
