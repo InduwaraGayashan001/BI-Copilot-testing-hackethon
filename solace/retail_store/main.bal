@@ -1,3 +1,4 @@
+import ballerina/http;
 import ballerina/log;
 import ballerinax/solace;
 
@@ -25,7 +26,8 @@ service on telemetryListener {
     remote function onMessage(DeviceTelemetryMessage message, solace:Caller caller) returns solace:Error? {
         DeviceTelemetry deviceTelemetry = message.payload;
 
-        if isExpired(message) {
+        if isExpired(message?.expiration) {
+            incrementSkippedExpiredCount();
             log:printWarn("Dropping expired device telemetry reading",
                     storeId = deviceTelemetry.storeId, deviceId = deviceTelemetry.deviceId,
                     metric = deviceTelemetry.metric, expiration = message?.expiration);
@@ -33,13 +35,31 @@ service on telemetryListener {
             return;
         }
 
-        // Downstream telemetry processing (e.g. persistence, aggregation, alerting) would be
-        // performed here.
+        // Buffered in a bounded, shed-oldest buffer awaiting downstream processing (e.g.
+        // persistence, aggregation) instead of being processed synchronously here.
+        bufferTelemetryReading(deviceTelemetry);
+        incrementProcessedCount();
+
         log:printInfo("Device telemetry reading processed",
                 storeId = deviceTelemetry.storeId, region = deviceTelemetry.region,
                 deviceType = deviceTelemetry.deviceType, deviceId = deviceTelemetry.deviceId,
                 metric = deviceTelemetry.metric, value = deviceTelemetry.value, unit = deviceTelemetry.unit,
                 readingAt = deviceTelemetry.readingAt);
+
+        decimal? crossedThreshold = checkThresholdCrossed(deviceTelemetry);
+        if crossedThreshold is decimal {
+            solace:Error? alertResult = publishDeviceTelemetryAlert(deviceTelemetry, crossedThreshold);
+            if alertResult is solace:Error {
+                log:printError("Failed to publish device telemetry alert",
+                        storeId = deviceTelemetry.storeId, deviceId = deviceTelemetry.deviceId,
+                        metric = deviceTelemetry.metric, 'error = alertResult);
+            } else {
+                log:printInfo("Device telemetry alert published",
+                        storeId = deviceTelemetry.storeId, region = deviceTelemetry.region,
+                        deviceType = deviceTelemetry.deviceType, metric = deviceTelemetry.metric,
+                        value = deviceTelemetry.value, threshold = crossedThreshold);
+            }
+        }
 
         check caller->ack(message);
     }
@@ -62,6 +82,38 @@ service on telemetryListener {
         }
 
         log:printError("Unexpected error while consuming device telemetry", 'error = err);
+    }
+}
+
+service /telemetry on new http:Listener(servicePort) {
+
+    # Drains the nightly batch queue `RETAIL.TELEMETRY.BATCH`, returning the number of readings
+    # drained and the number skipped because their expiration had already passed.
+    #
+    # + return - The drain result on success, or an error response on failure
+    resource function post drain() returns DrainCompleted|DrainError {
+        DrainResult|solace:Error result = drainBatchQueue();
+
+        if result is solace:Error {
+            return <DrainError>{
+                body: {
+                    message: string `Failed to drain batch queue: ${result.message()}`
+                }
+            };
+        }
+
+        return <DrainCompleted>{
+            body: result
+        };
+    }
+
+    # Returns the current state of the bounded telemetry buffer and processing counters.
+    #
+    # + return - The current telemetry health snapshot
+    resource function get health() returns TelemetryHealthOk {
+        return <TelemetryHealthOk>{
+            body: buildTelemetryHealth()
+        };
     }
 }
 
