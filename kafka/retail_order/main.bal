@@ -18,13 +18,7 @@ service kafka:Service on orderKafkaListener {
 
     remote function onConsumerRecord(kafka:Caller caller, OrderEventConsumerRecord[] records) returns error? {
         foreach OrderEventConsumerRecord orderEventRecord in records {
-            OrderEvent orderEvent = orderEventRecord.value;
-            error? processResult = processOrderEvent(orderEvent);
-            if processResult is error {
-                log:printError("Failed to process order event, batch will not be committed",
-                        'error = processResult, orderId = orderEvent.orderId);
-                return processResult;
-            }
+            handleOrderEventRecord(orderEventRecord);
         }
 
         kafka:Error? commitResult = caller->commit();
@@ -32,10 +26,42 @@ service kafka:Service on orderKafkaListener {
             log:printError("Failed to commit offsets for the processed batch", 'error = commitResult);
             return commitResult;
         }
-        log:printInfo("Successfully processed and committed batch", batchSize = records.length());
+        log:printInfo("Successfully processed batch", batchSize = records.length());
     }
 
     remote function onError(kafka:Error err) returns error? {
         log:printError("Error while consuming order events", 'error = err);
+    }
+}
+
+// Handles a single order event record end-to-end: malformed payloads are routed
+// straight to the DLQ, valid ones are enriched and published with retries, and any
+// exhausted retries fall back to the DLQ as well. A single bad record never
+// prevents the rest of the batch, or the batch commit, from proceeding.
+function handleOrderEventRecord(OrderEventConsumerRecord orderEventRecord) {
+    OrderEvent orderEvent = orderEventRecord.value;
+    byte[] rawValue = orderEvent.toJsonString().toBytes();
+
+    InvalidOrderEventError? validationError = validateOrderEvent(orderEvent);
+    if validationError is InvalidOrderEventError {
+        log:printWarn("Order event failed validation, routing to DLQ without retry",
+                orderId = orderEvent.orderId, 'error = validationError);
+        error? dlqResult = publishToDlq(rawValue, validationError.message(), orderEvent.orderId);
+        if dlqResult is error {
+            log:printError("Failed to route invalid order event to DLQ", 'error = dlqResult,
+                    orderId = orderEvent.orderId);
+        }
+        return;
+    }
+
+    error? processResult = enrichAndPublishWithRetry(orderEvent);
+    if processResult is error {
+        log:printError("Order event enrichment/publish failed after retries, routing to DLQ",
+                'error = processResult, orderId = orderEvent.orderId);
+        error? dlqResult = publishToDlq(rawValue, processResult.message(), orderEvent.orderId);
+        if dlqResult is error {
+            log:printError("Failed to route failed order event to DLQ", 'error = dlqResult,
+                    orderId = orderEvent.orderId);
+        }
     }
 }
