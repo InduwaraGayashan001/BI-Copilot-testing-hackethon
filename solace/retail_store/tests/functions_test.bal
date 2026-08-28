@@ -1,5 +1,6 @@
 import ballerina/test;
 import ballerina/time;
+import ballerinax/solace;
 
 final DeviceTelemetry sampleFridgeTelemetry = {
     storeId: "store-042",
@@ -86,26 +87,35 @@ function testBuildAlertTopicUsesRegionAndStoreId() {
 }
 
 @test:Config {}
-function testPackAlertCorrelationRespectsUserDataSizeLimit() {
-    AlertCorrelation alertCorrelation = {
-        storeId: "store-042",
-        triggeredAt: 1800000000,
-        severity: 1
-    };
-    byte[] packed = packAlertCorrelation(alertCorrelation);
-    test:assertEquals(packed.length(), 25, msg = "Packed correlation payload should be exactly 25 bytes");
-    test:assertTrue(packed.length() <= 36, msg = "Packed correlation payload must respect Solace's 36-byte userData limit");
+function testBuildAlertCorrelationPropertiesCarriesStoreIdAndSeverity() {
+    map<solace:Property> properties = buildAlertCorrelationProperties(sampleFridgeTelemetry);
+    test:assertEquals(properties.get("storeId"), sampleFridgeTelemetry.storeId,
+            msg = "storeId should be carried in the correlation properties");
+    test:assertEquals(properties.get("severity"), 1, msg = "severity should be carried in the correlation properties");
+    test:assertTrue(properties.hasKey("triggeredAt"),
+            msg = "triggeredAt should be carried in the correlation properties");
 }
 
 @test:Config {}
-function testPackAlertCorrelationTruncatesLongStoreId() {
-    AlertCorrelation alertCorrelation = {
-        storeId: "store-with-a-very-long-identifier",
-        triggeredAt: 1800000000,
-        severity: 1
+function testIsRegionAllowedTrueForAllowedRegion() {
+    test:assertTrue(isRegionAllowed(sampleFridgeTelemetry),
+            msg = "A reading from an allowed region should not be blocked");
+}
+
+@test:Config {}
+function testIsRegionAllowedFalseForDisallowedRegion() {
+    DeviceTelemetry blockedRegionTelemetry = {
+        storeId: "store-099",
+        region: "ap-south",
+        deviceType: "fridge",
+        deviceId: "fridge-02",
+        metric: "temperature",
+        value: 4.0d,
+        unit: "celsius",
+        readingAt: "2026-08-28T03:00:00Z"
     };
-    byte[] packed = packAlertCorrelation(alertCorrelation);
-    test:assertEquals(packed.length(), 25, msg = "Packed correlation payload should remain fixed at 25 bytes");
+    test:assertFalse(isRegionAllowed(blockedRegionTelemetry),
+            msg = "A reading from a region not on the allow list should be blocked");
 }
 
 @test:Config {}

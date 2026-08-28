@@ -19,12 +19,6 @@ configurable string telemetryEndpointName = "RETAIL.TELEMETRY.DTE";
 // HTTP listener configuration.
 configurable int servicePort = 8092;
 
-// Nightly batch drain configuration: the durable queue is drained with a blocking receive per
-// message, using this timeout to wait for the next message before falling back to a
-// non-blocking receive to confirm the queue is actually empty.
-configurable string batchQueueName = "RETAIL.TELEMETRY.BATCH";
-configurable decimal batchReceiveTimeout = 5.0;
-
 // Alerting configuration: published with DIRECT (at-most-once) delivery, a short time-to-live
 // and top priority so that alerts are not queued behind routine telemetry traffic.
 configurable decimal alertTimeToLive = 30.0;
@@ -38,13 +32,12 @@ configurable map<decimal> deviceTypeThresholds = {
     "pos": 100.0
 };
 
-// Compression level (0-9) applied to the connections to the broker. 0 disables compression
-// (the default); higher values trade additional CPU time spent compressing/decompressing each
-// message for reduced bytes transferred over the wire - see connections.bal for details.
-configurable int solaceCompressionLevel = 1;
-
 // Bounded in-memory buffer configuration for telemetry readings awaiting downstream processing.
 // When the buffer is full, the oldest buffered reading is shed to make room for the newest one
 // (shed-oldest backpressure) rather than blocking or rejecting the newest reading.
 configurable int telemetryBufferCapacity = 100;
+
+// Per-region allow list. Telemetry readings originating from a region not on this list are
+// dropped and counted instead of being buffered/processed.
+configurable string[] allowedRegions = ["us-east", "us-west", "eu-west"];
 

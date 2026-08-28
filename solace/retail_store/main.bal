@@ -26,6 +26,15 @@ service on telemetryListener {
     remote function onMessage(DeviceTelemetryMessage message, solace:Caller caller) returns solace:Error? {
         DeviceTelemetry deviceTelemetry = message.payload;
 
+        if !isRegionAllowed(deviceTelemetry) {
+            incrementBlockedRegionCount();
+            log:printWarn("Dropping device telemetry reading from a region not on the allow list",
+                    storeId = deviceTelemetry.storeId, region = deviceTelemetry.region,
+                    deviceId = deviceTelemetry.deviceId, metric = deviceTelemetry.metric);
+            check caller->ack(message);
+            return;
+        }
+
         if isExpired(message?.expiration) {
             incrementSkippedExpiredCount();
             log:printWarn("Dropping expired device telemetry reading",
@@ -86,26 +95,6 @@ service on telemetryListener {
 }
 
 service /telemetry on new http:Listener(servicePort) {
-
-    # Drains the nightly batch queue `RETAIL.TELEMETRY.BATCH`, returning the number of readings
-    # drained and the number skipped because their expiration had already passed.
-    #
-    # + return - The drain result on success, or an error response on failure
-    resource function post drain() returns DrainCompleted|DrainError {
-        DrainResult|solace:Error result = drainBatchQueue();
-
-        if result is solace:Error {
-            return <DrainError>{
-                body: {
-                    message: string `Failed to drain batch queue: ${result.message()}`
-                }
-            };
-        }
-
-        return <DrainCompleted>{
-            body: result
-        };
-    }
 
     # Returns the current state of the bounded telemetry buffer and processing counters.
     #
