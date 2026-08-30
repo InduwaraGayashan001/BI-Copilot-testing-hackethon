@@ -13,3 +13,39 @@ public type ClaimAccepted record {|
     string claimId;
     string routingKey;
 |};
+
+# Represents a claim message that exhausted its retries and landed on the dead-letter queue.
+public type DeadLetterMessage record {|
+    string claimId;
+    string routingKey;
+    int retryCount;
+    string failureReason;
+    ClaimSubmission claim;
+|};
+
+# Response body for the dead-letter drain/inspect endpoint.
+public type DeadLetterListing record {|
+    int count;
+    DeadLetterMessage[] messages;
+|};
+
+# Response body returned after a replay request completes.
+public type ReplayResult record {|
+    int replayedCount;
+    string[] claimIds;
+|};
+
+# Response body returned after a purge request completes.
+public type PurgeResult record {|
+    string message;
+|};
+
+# Optional request body for the dead-letter replay endpoint.
+public type ReplayRequest record {|
+    string[] claimIds?;
+|};
+
+# Generic error message body used by error responses.
+public type ErrorMessage record {|
+    string message;
+|};

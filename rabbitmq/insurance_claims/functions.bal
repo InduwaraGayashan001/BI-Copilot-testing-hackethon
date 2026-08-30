@@ -1,3 +1,5 @@
+import ballerinax/rabbitmq;
+
 # Derives the routing key for a claim submission from its claim type and priority.
 # The claim type is normalized to lower case and any whitespace is replaced with a dot
 # to build a `claim.<type>.<priority>` style routing key, e.g. `claim.auto.high`.
@@ -12,4 +14,35 @@ function buildRoutingKey(string claimType, string priority) returns string {
     normalizedType = whitespacePattern.replaceAll(normalizedType, "-");
     normalizedPriority = whitespacePattern.replaceAll(normalizedPriority, "-");
     return string `claim.${normalizedType}.${normalizedPriority}`;
+}
+
+# Reads the current retry count from a claim message's headers. Absent or malformed
+# values are treated as the first attempt (0 prior retries).
+#
+# + properties - the message's basic properties, if present
+# + return - the number of times this message has already been retried
+function extractRetryCount(rabbitmq:BasicProperties? properties) returns int {
+    if properties is () {
+        return 0;
+    }
+    map<anydata>? headers = properties?.headers;
+    if headers is () {
+        return 0;
+    }
+    anydata retryCountValue = headers[RETRY_COUNT_HEADER];
+    if retryCountValue is int {
+        return retryCountValue;
+    }
+    return 0;
+}
+
+# Simulates the business validation/processing of a claim submission. Returns an error
+# when the claim cannot be processed so the caller can decide to retry or dead-letter it.
+#
+# + claimSubmission - the claim submission to process
+# + return - () on success, or an error describing why processing failed
+function processClaim(ClaimSubmission claimSubmission) returns error? {
+    if claimSubmission.claimAmount <= 0d {
+        return error(string `Invalid claim amount for claim ${claimSubmission.claimId}`);
+    }
 }
