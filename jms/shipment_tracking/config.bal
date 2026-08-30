@@ -1,14 +1,8 @@
 // ActiveMQ Artemis broker connection URL.
 configurable string providerUrl = "tcp://localhost:61616";
 
-// HTTP listener port for the reconciliation control endpoint.
-configurable int servicePort = 8080;
-
-// Queue that the legacy system publishes fixed-width shipment status events to.
+// Queue that the legacy system publishes JSON shipment status events to.
 configurable string shipmentStatusInQueue = "SHIPMENT.STATUS.IN";
-
-// Queue that messages which fail fixed-width parsing are routed to.
-configurable string shipmentStatusInvalidQueue = "SHIPMENT.STATUS.INVALID";
 
 // Default queue that accepted (non-exception) shipment status events are published to when the
 // carrier is not present in carrierStatusOutQueues.
@@ -34,17 +28,6 @@ configurable int exceptionPriority = 7;
 // processed indefinitely if left unconsumed.
 configurable int exceptionTtlMillis = 86400000;
 
-// Queue that the legacy system replays shipment status events to for nightly reconciliation.
-configurable string shipmentStatusReplayQueue = "SHIPMENT.STATUS.REPLAY";
-
-// Queue that replay messages exceeding maxProcessingAttempts are routed to instead of being
-// retried further.
+// Queue that messages failing JSON binding are routed to, with the error category attached as a
+// message property.
 configurable string shipmentStatusDlqQueue = "SHIPMENT.STATUS.DLQ";
-
-// Number of messages drained from SHIPMENT.STATUS.REPLAY per transacted batch during
-// reconciliation, with one commit per batch.
-configurable int reconcileBatchSize = 100;
-
-// Maximum number of processing attempts for a single replay message before it is treated as a
-// poison message and routed to shipmentStatusDlqQueue.
-configurable int maxProcessingAttempts = 5;
