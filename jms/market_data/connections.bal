@@ -35,3 +35,26 @@ listener jms:Listener marketDataPricesListener = check new (
         messageSelector: instrumentClassSelector
     }
 );
+
+final jms:Connection jmsPublishConnection = check new (
+    initialContextFactory = "org.apache.activemq.jndi.ActiveMQInitialContextFactory",
+    providerUrl = providerUrl
+);
+
+// Session used to republish normalised ticks and spread alerts. Auto-acknowledge is sufficient
+// here since these are outbound publishes rather than consumed messages.
+final jms:Session jmsPublishSession = check createJmsPublishSession(jmsPublishConnection);
+
+function createJmsPublishSession(jms:Connection connection) returns jms:Session|error {
+    return connection->createSession(jms:AUTO_ACKNOWLEDGE);
+}
+
+final jms:MessageProducer normalisedTickProducer = check jmsPublishSession.createProducer({
+    'type: jms:TOPIC,
+    name: "MARKET.DATA.NORMALISED"
+});
+
+final jms:MessageProducer spreadAlertProducer = check jmsPublishSession.createProducer({
+    'type: jms:TOPIC,
+    name: "MARKET.DATA.ALERTS"
+});
