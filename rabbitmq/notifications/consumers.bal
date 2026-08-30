@@ -2,13 +2,13 @@ import ballerina/lang.value;
 import ballerina/log;
 import ballerinax/rabbitmq;
 
-# Common handling shared by every channel consumer: validates the message's tenant/notification
-# headers, skips reprocessing if this (notificationId, channel) pair was already delivered
-# (dedup on redelivery), enforces the tenant's per-channel rate limit (requeueing rather than
-# dropping when over limit), and finally records the delivery.
+# Common handling shared by every destination consumer: validates the message's
+# tenant/notification headers, skips reprocessing if this (notificationId, destination) pair
+# was already delivered (dedup on redelivery), enforces the tenant's per-destination rate limit
+# (requeueing rather than dropping when over limit), and finally records the delivery.
 #
 # + message - the delivered notification message
-# + channel - the channel this consumer handles
+# + channel - the destination this consumer handles
 # + caller - handle used to ack/nack the original delivery
 # + return - () once the delivery has been handled (acked or nacked), or an error if the
 # message could not be decoded/processed
@@ -43,7 +43,7 @@ function handleChannelDelivery(rabbitmq:AnydataMessage message, NotificationChan
     check caller->basicAck();
 }
 
-# Email channel consumer: consumes every notification fanned out to `notifications.email`.
+# Email consumer: consumes every notification routed to `notifications.email`.
 @rabbitmq:ServiceConfig {
     queueName: NOTIFICATIONS_EMAIL_QUEUE,
     autoAck: false
@@ -54,18 +54,7 @@ service rabbitmq:Service on emailQueueListener {
     }
 }
 
-# SMS channel consumer: consumes every notification fanned out to `notifications.sms`.
-@rabbitmq:ServiceConfig {
-    queueName: NOTIFICATIONS_SMS_QUEUE,
-    autoAck: false
-}
-service rabbitmq:Service on smsQueueListener {
-    remote function onMessage(rabbitmq:AnydataMessage message, rabbitmq:Caller caller) returns error? {
-        check handleChannelDelivery(message, CHANNEL_SMS, caller);
-    }
-}
-
-# Push channel consumer: consumes every notification fanned out to `notifications.push`.
+# Push consumer: consumes every notification routed to `notifications.push`.
 @rabbitmq:ServiceConfig {
     queueName: NOTIFICATIONS_PUSH_QUEUE,
     autoAck: false
@@ -73,5 +62,17 @@ service rabbitmq:Service on smsQueueListener {
 service rabbitmq:Service on pushQueueListener {
     remote function onMessage(rabbitmq:AnydataMessage message, rabbitmq:Caller caller) returns error? {
         check handleChannelDelivery(message, CHANNEL_PUSH, caller);
+    }
+}
+
+# Urgent consumer: consumes every notification routed to `notifications.urgent` (urgency ==
+# urgent), instead of that notification's normally selected channels.
+@rabbitmq:ServiceConfig {
+    queueName: NOTIFICATIONS_URGENT_QUEUE,
+    autoAck: false
+}
+service rabbitmq:Service on urgentQueueListener {
+    remote function onMessage(rabbitmq:AnydataMessage message, rabbitmq:Caller caller) returns error? {
+        check handleChannelDelivery(message, CHANNEL_URGENT, caller);
     }
 }

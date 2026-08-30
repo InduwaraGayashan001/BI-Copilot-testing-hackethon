@@ -1,28 +1,38 @@
 import ballerina/test;
 import ballerinax/rabbitmq;
 
+function sampleNotificationRequest(NotificationUrgency urgency, NotificationChannel[] channels) returns NotificationRequest => {
+    tenantId: "tenant-a",
+    notificationId: "NOTIF-RESOLVE-1",
+    recipients: ["someone@example.com"],
+    subject: "Subject",
+    body: "Body",
+    channels,
+    urgency
+};
+
 @test:Config {}
-function testMapUrgencyToPriorityLow() {
-    int priority = mapUrgencyToPriority(URGENCY_LOW);
-    test:assertEquals(priority, 0, msg = "Low urgency should map to priority 0");
+function testResolveDestinationsRoutesUrgentToUrgentOnly() {
+    NotificationRequest notificationRequest = sampleNotificationRequest(URGENCY_URGENT, [CHANNEL_EMAIL, CHANNEL_PUSH]);
+    NotificationChannel[] destinations = resolveDestinations(notificationRequest);
+    test:assertEquals(destinations, [CHANNEL_URGENT],
+            msg = "An urgent notification should be routed only to the urgent destination, bypassing its selected channels");
 }
 
 @test:Config {}
-function testMapUrgencyToPriorityNormal() {
-    int priority = mapUrgencyToPriority(URGENCY_NORMAL);
-    test:assertEquals(priority, 8, msg = "Normal urgency should map to priority 8");
+function testResolveDestinationsRoutesNonUrgentToSelectedChannels() {
+    NotificationRequest notificationRequest = sampleNotificationRequest(URGENCY_HIGH, [CHANNEL_EMAIL, CHANNEL_PUSH]);
+    NotificationChannel[] destinations = resolveDestinations(notificationRequest);
+    test:assertEquals(destinations, [CHANNEL_EMAIL, CHANNEL_PUSH],
+            msg = "A non-urgent notification should be routed to its selected channels");
 }
 
 @test:Config {}
-function testMapUrgencyToPriorityHigh() {
-    int priority = mapUrgencyToPriority(URGENCY_HIGH);
-    test:assertEquals(priority, 16, msg = "High urgency should map to priority 16");
-}
-
-@test:Config {}
-function testMapUrgencyToPriorityUrgent() {
-    int priority = mapUrgencyToPriority(URGENCY_URGENT);
-    test:assertEquals(priority, 31, msg = "Urgent urgency should map to priority 31 (max of the 0-31 range)");
+function testResolveDestinationsRoutesSingleChannel() {
+    NotificationRequest notificationRequest = sampleNotificationRequest(URGENCY_LOW, [CHANNEL_EMAIL]);
+    NotificationChannel[] destinations = resolveDestinations(notificationRequest);
+    test:assertEquals(destinations, [CHANNEL_EMAIL],
+            msg = "A notification selecting only email should be routed only to email");
 }
 
 @test:Config {}

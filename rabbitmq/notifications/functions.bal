@@ -22,26 +22,16 @@ function extractNotificationHeaders(rabbitmq:BasicProperties? properties) return
     return error("Notification message is missing the tenantId/notificationId headers");
 }
 
-# Maps a notification's requested urgency to a numeric message priority. Quorum queues on
-# RabbitMQ 4.3+ support strict priorities in the 0-31 range; these levels are spread across
-# that range so `urgent` notifications are dispatched ahead of lower-urgency ones.
+# Determines which destination(s) a notification request should be published to. Urgency picks
+# the destination: an `urgent` request is routed only to the dedicated urgent destination,
+# bypassing its normally selected channels entirely; any other urgency is routed to each of its
+# selected channels.
 #
-# + urgency - the requested urgency level
-# + return - the numeric priority (0-31) corresponding to the urgency
-function mapUrgencyToPriority(NotificationUrgency urgency) returns int {
-    match urgency {
-        URGENCY_LOW => {
-            return 0;
-        }
-        URGENCY_NORMAL => {
-            return 8;
-        }
-        URGENCY_HIGH => {
-            return 16;
-        }
-        URGENCY_URGENT => {
-            return 31;
-        }
+# + notificationRequest - the notification dispatch request
+# + return - the destinations to publish the notification to
+function resolveDestinations(NotificationRequest notificationRequest) returns NotificationChannel[] {
+    if notificationRequest.urgency == URGENCY_URGENT {
+        return [CHANNEL_URGENT];
     }
-    return 8;
+    return notificationRequest.channels;
 }

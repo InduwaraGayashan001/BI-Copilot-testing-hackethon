@@ -7,48 +7,52 @@ function init() returns error? {
 
 service /notifications on new http:Listener(httpListenerPort) {
 
-    # Accepts a multi-tenant notification dispatch request and publishes it once to the
-    # `notifications.broadcast` fanout exchange, which fans the message out to the email, sms,
-    # and push queues. The tenant ID is carried in the message headers so channel consumers can
-    # apply per-tenant handling, and the requested urgency is mapped to a numeric priority
-    # (0-31) carried both as a header and, on RabbitMQ 4.3+ quorum queues, honored natively by
-    # the broker for queue ordering.
+    # Accepts a multi-tenant notification dispatch request and publishes it to the
+    # `notifications.broadcast` direct exchange. Urgency picks the destination: an `urgent`
+    # notification is published once with routing key "urgent" and reaches only
+    # `notifications.urgent`, bypassing its normally selected channels entirely. Any other
+    # urgency is published once per selected channel, with routing key "email"/"push", so it
+    # reaches only that channel's queue. The tenant ID and notification ID are carried in the
+    # message headers so destination consumers can apply per-tenant handling and dedupe
+    # redeliveries without deserializing the payload.
     #
     # + notificationRequest - the notification dispatch request payload
-    # + return - 202 Accepted with the priority used, or a 500 if publishing failed
+    # + return - 202 Accepted with the destinations the notification was routed to, or a 500 if
+    # publishing failed
     resource function post .(NotificationRequest notificationRequest)
             returns http:Accepted|http:InternalServerError {
-        int priority = mapUrgencyToPriority(notificationRequest.urgency);
+        NotificationChannel[] destinations = resolveDestinations(notificationRequest);
 
-        rabbitmq:BasicProperties properties = {
-            correlationId: notificationRequest.notificationId,
-            contentType: "application/json",
-            headers: {
-                [TENANT_ID_HEADER]: notificationRequest.tenantId,
-                [NOTIFICATION_ID_HEADER]: notificationRequest.notificationId,
-                [PRIORITY_HEADER]: priority
-            }
-        };
-
-        rabbitmq:AnydataMessage notificationMessage = {
-            content: notificationRequest,
-            routingKey: "",
-            exchange: NOTIFICATIONS_EXCHANGE,
-            properties: properties
-        };
-
-        rabbitmq:Error? publishResult = rabbitmqClient->publishMessage(notificationMessage);
-        if publishResult is rabbitmq:Error {
-            ErrorMessage errorMessage = {
-                message: "Failed to publish notification: " + publishResult.message()
+        foreach NotificationChannel destination in destinations {
+            rabbitmq:BasicProperties properties = {
+                correlationId: notificationRequest.notificationId,
+                contentType: "application/json",
+                headers: {
+                    [TENANT_ID_HEADER]: notificationRequest.tenantId,
+                    [NOTIFICATION_ID_HEADER]: notificationRequest.notificationId
+                }
             };
-            return <http:InternalServerError>{body: errorMessage};
+
+            rabbitmq:AnydataMessage notificationMessage = {
+                content: notificationRequest,
+                routingKey: destination,
+                exchange: NOTIFICATIONS_EXCHANGE,
+                properties: properties
+            };
+
+            rabbitmq:Error? publishResult = rabbitmqClient->publishMessage(notificationMessage);
+            if publishResult is rabbitmq:Error {
+                ErrorMessage errorMessage = {
+                    message: "Failed to publish notification to " + destination + ": " + publishResult.message()
+                };
+                return <http:InternalServerError>{body: errorMessage};
+            }
         }
 
         NotificationAccepted notificationAccepted = {
             notificationId: notificationRequest.notificationId,
             tenantId: notificationRequest.tenantId,
-            priority
+            routedTo: destinations
         };
         return <http:Accepted>{body: notificationAccepted};
     }

@@ -8,8 +8,8 @@ function testIsAlreadyDeliveredFalseInitially() {
 
 @test:Config {}
 function testRecordDeliveryMarksAsDelivered() {
-    recordDelivery("NOTIF-STATE-2", CHANNEL_SMS);
-    boolean alreadyDelivered = isAlreadyDelivered("NOTIF-STATE-2", CHANNEL_SMS);
+    recordDelivery("NOTIF-STATE-2", CHANNEL_URGENT);
+    boolean alreadyDelivered = isAlreadyDelivered("NOTIF-STATE-2", CHANNEL_URGENT);
     test:assertTrue(alreadyDelivered, msg = "A recorded delivery should be reported as already delivered");
 }
 
@@ -25,7 +25,7 @@ function testRecordDeliveryIsPerChannel() {
 @test:Config {}
 function testGetDeliveriesReturnsAllRecordedChannels() {
     recordDelivery("NOTIF-STATE-4", CHANNEL_EMAIL);
-    recordDelivery("NOTIF-STATE-4", CHANNEL_SMS);
+    recordDelivery("NOTIF-STATE-4", CHANNEL_URGENT);
     recordDelivery("NOTIF-STATE-4", CHANNEL_PUSH);
 
     ChannelDelivery[] deliveries = getDeliveries("NOTIF-STATE-4");
@@ -59,10 +59,10 @@ function testTryConsumeRateLimitAllowsWithinLimit() {
 function testTryConsumeRateLimitBlocksOverLimit() {
     string tenantId = "tenant-rate-2";
     foreach int i in 0 ..< tenantRateLimitPerWindow {
-        boolean allowed = tryConsumeRateLimit(tenantId, CHANNEL_SMS);
+        boolean allowed = tryConsumeRateLimit(tenantId, CHANNEL_URGENT);
         test:assertTrue(allowed, msg = "Attempts up to the configured limit should be allowed");
     }
-    boolean overLimitAttempt = tryConsumeRateLimit(tenantId, CHANNEL_SMS);
+    boolean overLimitAttempt = tryConsumeRateLimit(tenantId, CHANNEL_URGENT);
     test:assertFalse(overLimitAttempt, msg = "An attempt beyond the configured limit within the same window should be blocked");
 }
 

@@ -1,12 +1,13 @@
-# Delivery channels a notification can be dispatched over.
+# Delivery destinations a notification can be routed to: the two selectable channels (email,
+# push) plus the dedicated urgent destination that `urgency` routes to instead.
 public enum NotificationChannel {
     CHANNEL_EMAIL = "email",
-    CHANNEL_SMS = "sms",
-    CHANNEL_PUSH = "push"
+    CHANNEL_PUSH = "push",
+    CHANNEL_URGENT = "urgent"
 }
 
-# Urgency levels a notification submission can request. Mapped to a numeric message priority
-# before publishing.
+# Urgency levels a notification submission can request. `urgent` routes the notification to the
+# dedicated `notifications.urgent` queue instead of its normal selected channels.
 public enum NotificationUrgency {
     URGENCY_LOW = "low",
     URGENCY_NORMAL = "normal",
@@ -29,7 +30,7 @@ public type NotificationRequest record {|
 public type NotificationAccepted record {|
     string notificationId;
     string tenantId;
-    int priority;
+    string[] routedTo;
 |};
 
 # Records that a single channel consumer has completed delivery of a notification, used to
