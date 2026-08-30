@@ -25,15 +25,17 @@ kafka:ConsumerConfiguration paymentAuthorizedConsumerConfiguration = {
 
 listener kafka:Listener paymentAuthorizedListener = new (kafkaBootstrapServers, paymentAuthorizedConsumerConfiguration);
 
-// Synchronous consumer used only for reconciliation (health snapshot and manual
-// replay). It is never subscribed via the consumer group; partitions are
-// assigned manually so it does not interfere with the group's partition balance.
-final kafka:Consumer reconciliationConsumer = check new (kafkaBootstrapServers, {
-    clientId: "payment-settlement-reconciliation",
+// Synchronous consumer used only for the health endpoint's offset/lag lookups.
+// It is never subscribed via the consumer group; partitions are assigned
+// manually so it does not interfere with the group's partition balance. It is
+// never used to poll or seek, only to query offset metadata.
+final kafka:Consumer settlementMonitoringConsumer = check new (kafkaBootstrapServers, {
+    clientId: "payment-settlement-monitoring",
     isolationLevel: "read_committed",
     autoCommit: false
 });
 
-// Duplicate-suppression cache: paymentId -> expiry epoch seconds. Guarded by a
-// lock since it is read-modify-written from concurrent listener dispatches.
-isolated map<int> processedPaymentIds = {};
+// Bounded, insertion-ordered history of the last N settled payments, used to
+// back the status endpoint. Oldest entries are evicted first once
+// `settledPaymentsHistorySize` is reached, so the store cannot grow unbounded.
+final SettledPaymentHistory settledPaymentHistory = new (settledPaymentsHistorySize);

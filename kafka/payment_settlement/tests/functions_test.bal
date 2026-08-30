@@ -10,32 +10,35 @@ function buildValidPaymentAuthorized(string paymentId) returns PaymentAuthorized
 };
 
 @test:Config {}
-function testMarkProcessedIfAbsentAllowsFirstOccurrence() {
-    boolean shouldSettle = markProcessedIfAbsent("PAY-DEDUP-1");
-    test:assertTrue(shouldSettle, msg = "The first occurrence of a paymentId should be allowed to settle");
-}
-
-@test:Config {dependsOn: [testMarkProcessedIfAbsentAllowsFirstOccurrence]}
-function testMarkProcessedIfAbsentRejectsDuplicateWithinTtl() {
-    boolean firstAttempt = markProcessedIfAbsent("PAY-DEDUP-2");
-    boolean secondAttempt = markProcessedIfAbsent("PAY-DEDUP-2");
-    test:assertTrue(firstAttempt, msg = "The first occurrence should be allowed to settle");
-    test:assertFalse(secondAttempt, msg = "A duplicate paymentId within the TTL window should be rejected");
-}
-
-@test:Config {dependsOn: [testMarkProcessedIfAbsentRejectsDuplicateWithinTtl]}
-function testGetProcessedEntryReturnsExpiryForSettledPayment() {
-    string paymentId = "PAY-DEDUP-3";
-    boolean shouldSettle = markProcessedIfAbsent(paymentId);
-    int? expiry = getProcessedEntry(paymentId);
-    test:assertTrue(shouldSettle, msg = "The first occurrence should be allowed to settle");
-    test:assertTrue(expiry is int, msg = "A settled paymentId should have a recorded expiry");
+function testRecordSettledPaymentIsRetrievable() {
+    string paymentId = "PAY-HISTORY-1";
+    recordSettledPayment(paymentId);
+    int? settledAt = getSettledPaymentTimestamp(paymentId);
+    test:assertTrue(settledAt is int, msg = "A recorded settlement should be retrievable by paymentId");
 }
 
 @test:Config {}
-function testGetProcessedEntryReturnsNilForUnknownPayment() {
-    int? expiry = getProcessedEntry("PAY-NEVER-SEEN");
-    test:assertTrue(expiry is (), msg = "An unknown paymentId should not have a cache entry");
+function testGetSettledPaymentTimestampReturnsNilForUnknownPayment() {
+    int? settledAt = getSettledPaymentTimestamp("PAY-NEVER-SEEN");
+    test:assertTrue(settledAt is (), msg = "An unknown paymentId should not have a settlement record");
+}
+
+@test:Config {}
+function testSettledPaymentHistoryEvictsOldestBeyondConfiguredSize() {
+    string oldestPaymentId = "PAY-EVICT-0";
+    int totalToInsert = settledPaymentsHistorySize + 1;
+    int index = 0;
+    while index < totalToInsert {
+        recordSettledPayment("PAY-EVICT-" + index.toString());
+        index += 1;
+    }
+    string newestPaymentId = "PAY-EVICT-" + (totalToInsert - 1).toString();
+
+    int? oldestEntry = getSettledPaymentTimestamp(oldestPaymentId);
+    int? newestEntry = getSettledPaymentTimestamp(newestPaymentId);
+    test:assertTrue(oldestEntry is (),
+            msg = "The oldest settlement should have been evicted once the history exceeded its configured size");
+    test:assertTrue(newestEntry is int, msg = "The newest settlement should still be present in the history");
 }
 
 @test:Config {}

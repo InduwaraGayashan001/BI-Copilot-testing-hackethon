@@ -5,8 +5,9 @@ configurable string kafkaBootstrapServers = ?;
 // restarts of the same logical producer instance so Kafka can fence zombies.
 configurable string paymentSettlementTransactionalId = ?;
 
-// Time-to-live, in seconds, for entries in the duplicate-suppression cache keyed by paymentId.
-configurable decimal duplicatePaymentTtlSeconds = 3600;
+// Number of most-recently-settled payments to retain in memory for the status
+// endpoint. Oldest entries are evicted first once this limit is reached.
+configurable int settledPaymentsHistorySize = 1000;
 
 // HTTP listener port for the reconciliation API.
 configurable int reconciliationServicePort = 9090;
