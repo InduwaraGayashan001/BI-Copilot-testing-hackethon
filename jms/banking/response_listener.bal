@@ -22,12 +22,52 @@ listener jms:Listener coreTransferResponseListener = check new (
     }
 );
 
+// Tracks redelivery attempts per message, since the connector only exposes a boolean
+// `redelivered` flag and not a numeric delivery count. Once a message's attempts exceed
+// maxRedeliveryCount, it is routed to CORE.TRANSFER.DLQ instead of being processed further.
+isolated class RedeliveryTracker {
+    private final map<int> attemptsByMessageId = {};
+
+    isolated function recordAttempt(string messageId) returns int {
+        lock {
+            int attempts = (self.attemptsByMessageId[messageId] ?: 0) + 1;
+            self.attemptsByMessageId[messageId] = attempts;
+            return attempts;
+        }
+    }
+
+    isolated function clear(string messageId) {
+        lock {
+            _ = self.attemptsByMessageId.removeIfHasKey(messageId);
+        }
+    }
+}
+
+final RedeliveryTracker redeliveryTracker = new;
+
 service "core-transfer-response-consumer" on coreTransferResponseListener {
 
     // Correlates an inbound core-banking transfer reply to a pending transfer using the JMS
     // correlationId. Matched replies are acknowledged once correlation succeeds; unmatched
     // replies are forwarded to CORE.TRANSFER.UNMATCHED instead of being silently acknowledged.
+    // Replies that have been redelivered past maxRedeliveryCount are routed to
+    // CORE.TRANSFER.DLQ instead of being processed further.
     remote function onMessage(jms:Message message, jms:Caller caller) returns error? {
+        string? messageId = message?.messageId;
+        boolean redelivered = message?.redelivered ?: false;
+
+        if redelivered && messageId is string {
+            int attempts = redeliveryTracker.recordAttempt(messageId);
+            if attempts > maxRedeliveryCount {
+                log:printWarn("Core-transfer response exceeded max redelivery count, routing to DLQ",
+                        messageId = messageId, attempts = attempts);
+                check routeToDlq(message);
+                redeliveryTracker.clear(messageId);
+                check caller->acknowledge(message);
+                return;
+            }
+        }
+
         string? correlationId = message?.correlationId;
         if correlationId is () {
             log:printWarn("Received core-transfer response without a correlation id, forwarding to unmatched queue");
@@ -61,6 +101,9 @@ service "core-transfer-response-consumer" on coreTransferResponseListener {
 
         // Acknowledge only once the reply has either been correlated to a pending transfer, or
         // has been safely forwarded onward to the unmatched queue.
+        if messageId is string {
+            redeliveryTracker.clear(messageId);
+        }
         check caller->acknowledge(message);
     }
 }
@@ -74,4 +117,15 @@ function forwardUnmatchedReply(jms:Message message) returns error? {
         jmsType: message?.jmsType
     };
     check coreTransferUnmatchedProducer->send(unmatchedMessage);
+}
+
+// Routes a message that has exceeded the max redelivery count to the dead-letter queue,
+// preserving the original correlation id and JMS type where present.
+function routeToDlq(jms:Message message) returns error? {
+    jms:TextMessage dlqMessage = {
+        content: message is jms:TextMessage ? message.content : "",
+        correlationId: message?.correlationId,
+        jmsType: message?.jmsType
+    };
+    check coreTransferDlqProducer->send(dlqMessage);
 }
