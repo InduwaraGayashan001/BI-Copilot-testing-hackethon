@@ -46,30 +46,73 @@ function testBuildAlertIfThresholdCrossedReturnsNilForMetricWithoutConfiguredThr
             msg = "No alert should be raised for a metric with no configured threshold");
 }
 
+// Builds a valid telemetry alert used as the baseline for buffer tests.
+function buildTelemetryAlert(string deviceId) returns TelemetryAlert => {
+    deviceId: deviceId,
+    siteId: "SITE-1",
+    metric: "temperature",
+    unit: "C",
+    mean: 90.0d,
+    threshold: 80.0d,
+    windowStart: "2026-08-30T05:00:00Z",
+    windowEnd: "2026-08-30T05:01:00Z"
+};
+
 @test:Config {}
-function testAlertPublishHealthTransitionsOnlyOnceOnRepeatedFailures() {
-    AlertPublishHealth alertPublishHealth = new ();
-    boolean firstTransition = alertPublishHealth.markFailure();
-    boolean secondTransition = alertPublishHealth.markFailure();
-    test:assertTrue(firstTransition, msg = "The first failure should transition from healthy to failing");
-    test:assertFalse(secondTransition, msg = "A repeated failure should not report another transition");
-    test:assertTrue(alertPublishHealth.isFailing(), msg = "Health should report failing after a failure");
+function testBoundedAlertBufferKeepsAllAlertsUnderCapacity() {
+    BoundedAlertBuffer boundedAlertBuffer = new (5);
+    boundedAlertBuffer.enqueue(buildTelemetryAlert("DEV-1"));
+    boundedAlertBuffer.enqueue(buildTelemetryAlert("DEV-2"));
+
+    TelemetryAlert[] drainedAlerts = boundedAlertBuffer.dequeueAll();
+    test:assertEquals(drainedAlerts.length(), 2, msg = "Both alerts should be retained when under capacity");
+    test:assertEquals(boundedAlertBuffer.getHealth().droppedCount, 0,
+            msg = "No alerts should be dropped when under capacity");
 }
 
 @test:Config {}
-function testAlertPublishHealthTransitionsOnlyOnceOnRepeatedSuccesses() {
-    AlertPublishHealth alertPublishHealth = new ();
-    _ = alertPublishHealth.markFailure();
-    boolean firstRecovery = alertPublishHealth.markSuccess();
-    boolean secondRecovery = alertPublishHealth.markSuccess();
-    test:assertTrue(firstRecovery, msg = "The first success after a failure should transition to healthy");
-    test:assertFalse(secondRecovery, msg = "A repeated success should not report another transition");
-    test:assertFalse(alertPublishHealth.isFailing(), msg = "Health should report healthy after recovery");
+function testBoundedAlertBufferDropsOldestWhenFull() {
+    BoundedAlertBuffer boundedAlertBuffer = new (2);
+    boundedAlertBuffer.enqueue(buildTelemetryAlert("DEV-1"));
+    boundedAlertBuffer.enqueue(buildTelemetryAlert("DEV-2"));
+    boundedAlertBuffer.enqueue(buildTelemetryAlert("DEV-3"));
+
+    TelemetryAlert[] drainedAlerts = boundedAlertBuffer.dequeueAll();
+    test:assertEquals(drainedAlerts.length(), 2, msg = "The buffer should never exceed its configured capacity");
+    test:assertEquals(drainedAlerts[0].deviceId, "DEV-2", msg = "The oldest alert should have been dropped first");
+    test:assertEquals(drainedAlerts[1].deviceId, "DEV-3", msg = "The newest alert should be retained");
 }
 
 @test:Config {}
-function testAlertPublishHealthStartsHealthy() {
-    AlertPublishHealth alertPublishHealth = new ();
-    test:assertFalse(alertPublishHealth.isFailing(), msg = "A freshly created health tracker should start healthy");
+function testBoundedAlertBufferCountsDroppedAlerts() {
+    BoundedAlertBuffer boundedAlertBuffer = new (1);
+    boundedAlertBuffer.enqueue(buildTelemetryAlert("DEV-1"));
+    boundedAlertBuffer.enqueue(buildTelemetryAlert("DEV-2"));
+    boundedAlertBuffer.enqueue(buildTelemetryAlert("DEV-3"));
+
+    AlertBufferHealth alertBufferHealth = boundedAlertBuffer.getHealth();
+    test:assertEquals(alertBufferHealth.droppedCount, 2, msg = "Two alerts should have been dropped beyond capacity 1");
+    test:assertEquals(alertBufferHealth.currentSize, 1, msg = "Only one alert should remain buffered");
+    test:assertEquals(alertBufferHealth.capacity, 1, msg = "capacity should reflect the configured value");
+}
+
+@test:Config {}
+function testBoundedAlertBufferDequeueAllClearsBuffer() {
+    BoundedAlertBuffer boundedAlertBuffer = new (5);
+    boundedAlertBuffer.enqueue(buildTelemetryAlert("DEV-1"));
+    TelemetryAlert[] firstDrain = boundedAlertBuffer.dequeueAll();
+    test:assertEquals(firstDrain.length(), 1, msg = "First drain should return the buffered alert");
+
+    TelemetryAlert[] secondDrain = boundedAlertBuffer.dequeueAll();
+    test:assertEquals(secondDrain.length(), 0, msg = "A second drain with nothing newly enqueued should be empty");
+}
+
+@test:Config {}
+function testBoundedAlertBufferGetHealthOnEmptyBuffer() {
+    BoundedAlertBuffer boundedAlertBuffer = new (10);
+    AlertBufferHealth alertBufferHealth = boundedAlertBuffer.getHealth();
+    test:assertEquals(alertBufferHealth.droppedCount, 0, msg = "A fresh buffer should report zero drops");
+    test:assertEquals(alertBufferHealth.currentSize, 0, msg = "A fresh buffer should report zero current size");
+    test:assertEquals(alertBufferHealth.capacity, 10, msg = "capacity should reflect the configured value");
 }
 

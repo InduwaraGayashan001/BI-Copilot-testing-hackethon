@@ -3,7 +3,7 @@ import ballerina/task;
 import ballerinax/kafka;
 
 // Recurring job that closes the current tumbling window on every tick,
-// publishing aggregates and any threshold alerts they trigger.
+// publishing aggregates and buffering any threshold alerts they trigger.
 class WindowFlushJob {
     *task:Job;
 
@@ -12,32 +12,40 @@ class WindowFlushJob {
     }
 }
 
+// Recurring job that drains the bounded alert buffer and publishes each
+// pending alert, running independently of the ingestion and window-flush
+// paths so a slow or failing publish never stalls either of them.
+class AlertBufferDrainJob {
+    *task:Job;
+
+    public function execute() {
+        drainAndPublishAlerts();
+    }
+}
+
 public function main() returns error? {
     task:JobId _ = check task:scheduleJobRecurByFrequency(new WindowFlushJob(), windowSizeSeconds);
-    log:printInfo("Started telemetry aggregation window flush job", intervalSeconds = windowSizeSeconds);
+    task:JobId _ = check task:scheduleJobRecurByFrequency(new AlertBufferDrainJob(), 1);
+    log:printInfo("Started telemetry aggregation window flush and alert buffer drain jobs",
+            windowIntervalSeconds = windowSizeSeconds);
+}
 
-    // Manual poll loop rather than a `kafka:Listener`, so the exact consumer
-    // instance being polled is also the one `pause`/`resume` are applied to
-    // for backpressure.
-    while true {
-        TelemetryReadingConsumerRecord[]|kafka:Error polledRecords = telemetryConsumer->poll(1);
-        if polledRecords is kafka:Error {
-            log:printError("Error while polling device telemetry events", 'error = polledRecords);
-            continue;
-        }
-        if polledRecords.length() == 0 {
-            continue;
-        }
+service kafka:Service on telemetryIngestionListener {
 
-        foreach TelemetryReadingConsumerRecord telemetryRecord in polledRecords {
+    remote function onConsumerRecord(kafka:Caller caller, TelemetryReadingConsumerRecord[] records) returns error? {
+        foreach TelemetryReadingConsumerRecord telemetryRecord in records {
             windowAggregator.addReading(telemetryRecord.value);
         }
 
-        kafka:Error? commitResult = telemetryConsumer->'commit();
+        kafka:Error? commitResult = caller->commit();
         if commitResult is kafka:Error {
             log:printError("Failed to commit offsets for the processed batch", 'error = commitResult);
-            continue;
+            return commitResult;
         }
-        log:printInfo("Successfully ingested telemetry batch", batchSize = polledRecords.length());
+        log:printInfo("Successfully ingested telemetry batch", batchSize = records.length());
+    }
+
+    remote function onError(kafka:Error err) returns error? {
+        log:printError("Error while consuming device telemetry events", 'error = err);
     }
 }

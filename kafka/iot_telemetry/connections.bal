@@ -5,21 +5,16 @@ const string TELEMETRY_AGGREGATED_TOPIC = "iot.telemetry.aggregated";
 const string TELEMETRY_ALERTS_TOPIC = "iot.alerts";
 const string TELEMETRY_INGESTION_GROUP = "telemetry-ingestion";
 
-// Raw consumer (rather than a `kafka:Listener`) so the ingestion loop can call
-// `pause`/`resume` on the exact same consumer instance that is polling, which
-// is required to implement partition-level backpressure. `concurrentConsumers`
-// runs 4 consumer threads within the same group, spreading the subscribed
-// topic's partitions across them. Avro-encoded records are decoded directly
-// into `TelemetryReading` values via the Confluent Schema Registry.
-final kafka:Consumer telemetryConsumer = check new (kafkaBootstrapServers, {
+// Listener for plain JSON telemetry readings. `concurrentConsumers` runs 4
+// consumer threads within the same group, spreading the subscribed topic's
+// partitions across them.
+listener kafka:Listener telemetryIngestionListener = new (kafkaBootstrapServers, {
     groupId: TELEMETRY_INGESTION_GROUP,
     topics: [TELEMETRY_RAW_TOPIC],
     offsetReset: "earliest",
     autoCommit: false,
     pollingInterval: 1,
-    concurrentConsumers: 4,
-    valueDeserializerType: kafka:DES_AVRO,
-    schemaRegistryUrl: schemaRegistryUrl
+    concurrentConsumers: 4
 });
 
 // Producer used to publish both the per-window aggregates and the threshold
@@ -34,6 +29,8 @@ final kafka:Producer telemetryProducer = check new (kafkaBootstrapServers, {
 // window.
 final WindowAggregator windowAggregator = new ();
 
-// Tracks whether alert publishing is currently failing, driving the
-// pause/resume backpressure decisions applied to the telemetry consumer.
-final AlertPublishHealth alertPublishHealth = new ();
+// Bounded buffer of alerts pending publish to `iot.alerts`. Decouples alert
+// publishing from ingestion: a slow or failing publish never stalls the
+// consumer, and once full, the oldest pending alert is dropped (counted) to
+// make room for the newest.
+final BoundedAlertBuffer alertBuffer = new (alertBufferCapacity);

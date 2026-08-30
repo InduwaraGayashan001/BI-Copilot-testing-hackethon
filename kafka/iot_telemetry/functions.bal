@@ -1,5 +1,4 @@
 import ballerina/log;
-import ballerinax/kafka;
 
 // Parses the "metric=threshold,metric=threshold" configuration string into a
 // lookup map. Malformed entries are logged and skipped rather than failing
@@ -42,7 +41,7 @@ function publishWindowAggregate(WindowAggregate windowAggregate) returns error? 
     });
 }
 
-// Publishes a threshold-crossing alert to `iot.alerts`, keyed by deviceId.
+// Publishes a single threshold-crossing alert to `iot.alerts`, keyed by deviceId.
 function publishTelemetryAlert(TelemetryAlert telemetryAlert) returns error? {
     check telemetryProducer->send({
         topic: TELEMETRY_ALERTS_TOPIC,
@@ -77,10 +76,9 @@ function buildAlertIfThresholdCrossed(WindowAggregate windowAggregate, map<decim
 }
 
 // Flushes the current tumbling window, publishes every resulting aggregate,
-// and publishes an alert for any aggregate whose mean crosses its metric's
-// threshold. Alert publish failures drive the backpressure pause/resume of
-// the telemetry consumer's partitions; aggregate publish failures are logged
-// since they do not feed the alert pipeline.
+// and enqueues an alert for any aggregate whose mean crosses its metric's
+// threshold. Alerts are buffered rather than published inline so a slow or
+// failing alert publish never stalls ingestion for unrelated devices.
 function flushWindowAndPublish() {
     map<decimal> thresholdsByMetric = parseMetricAlertThresholds(metricAlertThresholds);
     WindowAggregate[] windowAggregates = windowAggregator.'flush();
@@ -93,65 +91,23 @@ function flushWindowAndPublish() {
 
         TelemetryAlert? telemetryAlert = buildAlertIfThresholdCrossed(windowAggregate, thresholdsByMetric);
         if telemetryAlert is TelemetryAlert {
-            handleAlertPublish(telemetryAlert);
+            alertBuffer.enqueue(telemetryAlert);
         }
     }
     log:printInfo("Flushed telemetry aggregation window", windowCount = windowAggregates.length());
 }
 
-// Publishes a single alert and applies the backpressure state transition
-// based on the outcome: pause the telemetry consumer's partitions on the
-// first failure, and resume them on the first subsequent success.
-function handleAlertPublish(TelemetryAlert telemetryAlert) {
-    error? alertPublishResult = publishTelemetryAlert(telemetryAlert);
-    if alertPublishResult is error {
-        log:printError("Failed to publish telemetry alert", 'error = alertPublishResult,
-                deviceId = telemetryAlert.deviceId, metric = telemetryAlert.metric);
-        boolean transitionedToFailing = alertPublishHealth.markFailure();
-        if transitionedToFailing {
-            pauseTelemetryConsumerPartitions();
+// Drains every alert currently buffered and publishes each to `iot.alerts`.
+// Publish failures are logged and the alert is dropped rather than
+// re-buffered, since retrying indefinitely would let a persistent failure
+// grow the backlog without bound.
+function drainAndPublishAlerts() {
+    TelemetryAlert[] alertsToPublish = alertBuffer.dequeueAll();
+    foreach TelemetryAlert telemetryAlert in alertsToPublish {
+        error? alertPublishResult = publishTelemetryAlert(telemetryAlert);
+        if alertPublishResult is error {
+            log:printError("Failed to publish telemetry alert, dropping it", 'error = alertPublishResult,
+                    deviceId = telemetryAlert.deviceId, metric = telemetryAlert.metric);
         }
-        return;
     }
-    boolean transitionedToHealthy = alertPublishHealth.markSuccess();
-    if transitionedToHealthy {
-        resumeTelemetryConsumerPartitions();
-    }
-}
-
-// Pauses every partition currently assigned to the telemetry consumer,
-// applying backpressure so no further readings are pulled in while alert
-// publishing is failing.
-function pauseTelemetryConsumerPartitions() {
-    kafka:TopicPartition[]|kafka:Error assignedPartitions = telemetryConsumer->getAssignment();
-    if assignedPartitions is kafka:Error {
-        log:printError("Failed to read the telemetry consumer's assigned partitions for pausing",
-                'error = assignedPartitions);
-        return;
-    }
-    kafka:Error? pauseResult = telemetryConsumer->pause(assignedPartitions);
-    if pauseResult is kafka:Error {
-        log:printError("Failed to pause telemetry consumer partitions", 'error = pauseResult);
-        return;
-    }
-    log:printWarn("Paused telemetry consumer partitions due to failing alert publishing",
-            partitionCount = assignedPartitions.length());
-}
-
-// Resumes every partition currently assigned to the telemetry consumer, once
-// alert publishing has recovered.
-function resumeTelemetryConsumerPartitions() {
-    kafka:TopicPartition[]|kafka:Error assignedPartitions = telemetryConsumer->getAssignment();
-    if assignedPartitions is kafka:Error {
-        log:printError("Failed to read the telemetry consumer's assigned partitions for resuming",
-                'error = assignedPartitions);
-        return;
-    }
-    kafka:Error? resumeResult = telemetryConsumer->resume(assignedPartitions);
-    if resumeResult is kafka:Error {
-        log:printError("Failed to resume telemetry consumer partitions", 'error = resumeResult);
-        return;
-    }
-    log:printInfo("Resumed telemetry consumer partitions after alert publishing recovered",
-            partitionCount = assignedPartitions.length());
 }

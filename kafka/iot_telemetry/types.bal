@@ -60,3 +60,12 @@ type WindowAccumulator record {|
     decimal max;
     decimal sum;
 |};
+
+// Reports the bounded alert buffer's current occupancy, its capacity, and the
+// total number of alerts dropped (shed) since startup because the buffer was
+// full when a new alert arrived.
+public type AlertBufferHealth record {|
+    int droppedCount;
+    int currentSize;
+    int capacity;
+|};
