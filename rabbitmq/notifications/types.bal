@@ -32,6 +32,20 @@ public type NotificationAccepted record {|
     int priority;
 |};
 
+# Records that a single channel consumer has completed delivery of a notification, used to
+# suppress reprocessing the same (notificationId, channel) pair on redelivery.
+public type ChannelDelivery record {|
+    NotificationChannel channel;
+    string deliveredAt;
+|};
+
+# Reports the delivery status of a notification across all channels it was dispatched to,
+# based on which (notificationId, channel) pairs have been recorded as delivered so far.
+public type NotificationStatus record {|
+    string notificationId;
+    ChannelDelivery[] deliveries;
+|};
+
 # Generic error message body used by error responses.
 public type ErrorMessage record {|
     string message;

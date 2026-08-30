@@ -1,6 +1,44 @@
 import ballerinax/rabbitmq;
 
-final rabbitmq:Client rabbitmqClient = check new (rabbitmqHost, rabbitmqPort, connectionData = {
+# Creates the shared client used for publishing notifications and declaring topology. Extracted
+# into its own function (rather than an inline `new (...)` in the module-level declaration) so
+# tests can replace it via compile-time function mocking without needing a live broker to be
+# reachable.
+#
+# + return - a new RabbitMQ client, or an error if the connection could not be established
+function initRabbitmqClient() returns rabbitmq:Client|error {
+    return new (rabbitmqHost, rabbitmqPort, connectionData = {
+        username: rabbitmqUsername,
+        password: rabbitmqPassword,
+        virtualHost: rabbitmqVhost
+    });
+}
+
+final rabbitmq:Client rabbitmqClient = check initRabbitmqClient();
+
+# Dedicated listener for the email channel consumer, with its own prefetch (QoS) so a slow or
+# backlogged email consumer cannot starve the sms/push consumers.
+listener rabbitmq:Listener emailQueueListener = new (rabbitmqHost, rabbitmqPort, {
+    prefetchCount: emailPrefetchCount
+}, {
+    username: rabbitmqUsername,
+    password: rabbitmqPassword,
+    virtualHost: rabbitmqVhost
+});
+
+# Dedicated listener for the sms channel consumer, with its own prefetch (QoS).
+listener rabbitmq:Listener smsQueueListener = new (rabbitmqHost, rabbitmqPort, {
+    prefetchCount: smsPrefetchCount
+}, {
+    username: rabbitmqUsername,
+    password: rabbitmqPassword,
+    virtualHost: rabbitmqVhost
+});
+
+# Dedicated listener for the push channel consumer, with its own prefetch (QoS).
+listener rabbitmq:Listener pushQueueListener = new (rabbitmqHost, rabbitmqPort, {
+    prefetchCount: pushPrefetchCount
+}, {
     username: rabbitmqUsername,
     password: rabbitmqPassword,
     virtualHost: rabbitmqVhost
