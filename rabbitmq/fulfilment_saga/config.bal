@@ -4,6 +4,10 @@ configurable string rabbitmqVhost = "/";
 configurable string rabbitmqUsername = ?;
 configurable string rabbitmqPassword = ?;
 
+# Additional broker nodes the client can fail over to if the primary (`rabbitmqHost`:`rabbitmqPort`)
+# is unreachable. Each entry is a "host:port" pair, e.g. ["broker2.example.com:5672"].
+configurable string[] rabbitmqFailoverAddresses = [];
+
 configurable int httpListenerPort = 8080;
 
 # Maximum time (in milliseconds) to wait for the inventory reservation reply before

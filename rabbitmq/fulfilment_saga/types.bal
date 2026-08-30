@@ -12,8 +12,16 @@ public type FulfilmentRequest record {|
     string shippingMethod;
 |};
 
-# Represents the reservation outcome returned by the inventory service.
-public type ReservationResult record {|
+# Represents the payload published to `inventory.reserve` asking the inventory system to
+# reserve stock for an order.
+public type ReservationRequest record {|
+    string orderId;
+    string warehouseId;
+    OrderItem[] items;
+|};
+
+# Represents the reply the inventory responder publishes back to the caller's `replyTo` queue.
+public type ReservationResponse record {|
     string orderId;
     boolean reserved;
     string message?;
@@ -22,4 +30,26 @@ public type ReservationResult record {|
 # Generic error message body used by error responses.
 public type ErrorMessage record {|
     string message;
+|};
+
+# The distinct stages a fulfilment saga can be in.
+public enum SagaStatus {
+    SAGA_STARTED = "STARTED",
+    SAGA_INVENTORY_RESERVED = "INVENTORY_RESERVED",
+    SAGA_PAYMENT_CHARGED = "PAYMENT_CHARGED",
+    SAGA_SHIPPING_DISPATCHED = "SHIPPING_DISPATCHED",
+    SAGA_COMPLETED = "COMPLETED",
+    SAGA_INVENTORY_RELEASED = "INVENTORY_RELEASED",
+    SAGA_PAYMENT_REFUNDED = "PAYMENT_REFUNDED",
+    SAGA_FAILED = "FAILED"
+}
+
+# Tracks the progress (and any compensating actions) of a single order's fulfilment saga.
+public type SagaState record {|
+    string orderId;
+    SagaStatus status;
+    string[] completedSteps;
+    string[] compensatingSteps;
+    string? failureReason;
+    string lastUpdated;
 |};
