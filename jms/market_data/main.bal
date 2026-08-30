@@ -5,17 +5,13 @@ import ballerinax/java.jms;
 listener http:Listener marketDataControlListener = new (servicePort);
 
 // A named service value (rather than an inline service-on-listener) so it can be dynamically
-// detached/attached to marketDataPricesListener for the pause/resume/unsubscribe endpoints.
+// detached/attached to marketDataPricesListener for the pause/resume endpoints.
 jms:Service marketDataPricesConsumerService = service object {
 
     // Processes an inbound price tick and acknowledges it only after processing succeeds, so a
-    // failure leaves the message unacknowledged and eligible for redelivery. In-flight count is
-    // tracked so the unsubscribe endpoint can refuse while ticks are still being processed.
+    // failure leaves the message unacknowledged and eligible for redelivery.
     remote function onMessage(jms:Message message, jms:Caller caller) returns error? {
-        inFlightTracker.increment();
-        error? processResult = handlePriceTickMessage(message, caller);
-        inFlightTracker.decrement();
-        return processResult;
+        return handlePriceTickMessage(message, caller);
     }
 };
 
@@ -32,8 +28,8 @@ function handlePriceTickMessage(jms:Message message, jms:Caller caller) returns 
     }
 
     processPriceTick(priceTick);
+    tickCounter.increment(priceTick.instrumentClass);
     check publishNormalisedTick(priceTick);
-    check publishSpreadAlertIfNeeded(priceTick);
 
     check caller->acknowledge(message);
 }
@@ -46,18 +42,19 @@ function processPriceTick(PriceTick priceTick) {
             lastTradedPrice = priceTick.lastTradedPrice);
 }
 
-// Explicitly attaches the consumer service to the durable-subscription listener at startup,
-// instead of the declarative `service on listener` syntax, so it can later be dynamically
-// detached/re-attached by the pause/resume/unsubscribe endpoints below.
+// Explicitly attaches the consumer service to the listener at startup, instead of the
+// declarative `service on listener` syntax, so it can later be dynamically detached/re-attached
+// by the pause/resume endpoints below.
 function init() returns error? {
     check marketDataPricesListener.attach(marketDataPricesConsumerService, "market-data-prices-consumer");
     check marketDataPricesListener.'start();
 }
 
-service /marketData on marketDataControlListener {
+service /marketdata on marketDataControlListener {
 
-    # Pauses consumption from MARKET.DATA.PRICES by detaching the consumer service. Ticks
-    # published while paused are retained by the broker under the durable subscription.
+    # Pauses consumption from MARKET.DATA.PRICES by detaching the consumer service. Since the
+    # subscription is non-durable, ticks published while paused (or while every instance is down)
+    # are not retained by the broker and will be missed.
     #
     # + return - Confirmation that consumption has been paused, or an error response
     resource function post pause() returns ControlResponse|http:InternalServerError {
@@ -98,47 +95,10 @@ service /marketData on marketDataControlListener {
         return {state: "RUNNING", message: "Consumption from MARKET.DATA.PRICES has resumed"};
     }
 
-    # Unsubscribes the durable subscription on MARKET.DATA.PRICES. Refuses with a conflict while
-    # ticks are still in flight, since deleting a durable subscription with an active consumer or
-    # unacknowledged messages is erroneous.
+    # Returns a running count of ticks processed so far, broken down by instrument class.
     #
-    # + return - Confirmation that the subscription has been removed, a conflict if messages are
-    # still in flight, or an error response
-    resource function post unsubscribe() returns ControlResponse|http:Conflict|http:InternalServerError {
-        int inFlightCount = inFlightTracker.get();
-        if inFlightCount > 0 {
-            http:Conflict conflictResponse = {
-                body: {
-                    message: string `Cannot unsubscribe while ${inFlightCount} message(s) are still in flight`
-                }
-            };
-            return conflictResponse;
-        }
-
-        if consumerState.isAttached() {
-            error? detachResult = marketDataPricesListener.detach(marketDataPricesConsumerService);
-            if detachResult is error {
-                http:InternalServerError errorResponse = {
-                    body: {
-                        message: "Failed to detach consumer before unsubscribing: " + detachResult.message()
-                    }
-                };
-                return errorResponse;
-            }
-            consumerState.markDetached();
-        }
-
-        error? unsubscribeResult = marketDataPricesListener.gracefulStop();
-        if unsubscribeResult is error {
-            http:InternalServerError errorResponse = {
-                body: {
-                    message: "Failed to stop the listener before unsubscribing: " + unsubscribeResult.message()
-                }
-            };
-            return errorResponse;
-        }
-
-        consumerState.markUnsubscribed();
-        return {state: "UNSUBSCRIBED", message: "Durable subscription on MARKET.DATA.PRICES has been removed"};
+    # + return - The running tick counts by instrument class
+    resource function get stats() returns TickStats {
+        return {countsByInstrumentClass: tickCounter.snapshot()};
     }
 }

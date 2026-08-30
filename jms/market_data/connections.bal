@@ -12,26 +12,20 @@ function buildInstrumentClassSelector(string[] instrumentClasses) returns string
 
 final string instrumentClassSelector = buildInstrumentClassSelector(instrumentClasses);
 
-// ActiveMQ connection factories accept the JMS client id as a query parameter on the broker URL
-// since jms:ConnectionConfiguration has no dedicated clientId field. The client id must stay
-// stable across restarts so the broker can identify and resume the durable subscription.
-final string providerUrlWithClientId = string `${providerUrl}?jms.clientID=${clientId}`;
-
-// Durable subscription on MARKET.DATA.PRICES so ticks published while this service is down are
-// retained by the broker and delivered once it reconnects with the same clientId/subscriberName.
+// Non-durable subscription on MARKET.DATA.PRICES so this service can be scaled out horizontally:
+// each instance gets its own independent subscription with no shared client id/subscriber name to
+// coordinate. Ticks published while every instance is down are not retained by the broker.
 listener jms:Listener marketDataPricesListener = check new (
     connectionConfig = {
         initialContextFactory: "org.apache.activemq.jndi.ActiveMQInitialContextFactory",
-        providerUrl: providerUrlWithClientId
+        providerUrl: providerUrl
     },
     acknowledgementMode = jms:CLIENT_ACKNOWLEDGE,
     consumerOptions = {
-        'type: jms:DURABLE,
         destination: {
             'type: jms:TOPIC,
             name: "MARKET.DATA.PRICES"
         },
-        subscriberName: subscriberName,
         messageSelector: instrumentClassSelector
     }
 );
@@ -41,8 +35,8 @@ final jms:Connection jmsPublishConnection = check new (
     providerUrl = providerUrl
 );
 
-// Session used to republish normalised ticks and spread alerts. Auto-acknowledge is sufficient
-// here since these are outbound publishes rather than consumed messages.
+// Session used to republish normalised ticks. Auto-acknowledge is sufficient here since these
+// are outbound publishes rather than consumed messages.
 final jms:Session jmsPublishSession = check createJmsPublishSession(jmsPublishConnection);
 
 function createJmsPublishSession(jms:Connection connection) returns jms:Session|error {
@@ -52,9 +46,4 @@ function createJmsPublishSession(jms:Connection connection) returns jms:Session|
 final jms:MessageProducer normalisedTickProducer = check jmsPublishSession.createProducer({
     'type: jms:TOPIC,
     name: "MARKET.DATA.NORMALISED"
-});
-
-final jms:MessageProducer spreadAlertProducer = check jmsPublishSession.createProducer({
-    'type: jms:TOPIC,
-    name: "MARKET.DATA.ALERTS"
 });

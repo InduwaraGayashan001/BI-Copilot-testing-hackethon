@@ -9,20 +9,19 @@ public type PriceTick record {|
     string tickTime;
 |};
 
-// Alert raised when a tick's bid-ask spread crosses the configured threshold for its
-// instrument class, republished to MARKET.DATA.ALERTS.
-public type SpreadAlert record {|
-    string instrumentId;
-    string instrumentClass;
-    decimal bid;
-    decimal ask;
-    decimal spread;
-    decimal threshold;
-    string tickTime;
-|};
-
-// Response confirming a pause/resume/unsubscribe control operation.
+// Response confirming a pause/resume control operation.
 public type ControlResponse record {|
     string state;
     string message;
+|};
+
+// Running count of ticks processed for a single instrument class.
+public type InstrumentClassTickCount record {|
+    string instrumentClass;
+    int tickCount;
+|};
+
+// Running tick counts across all instrument classes seen so far, returned by GET /marketdata/stats.
+public type TickStats record {|
+    InstrumentClassTickCount[] countsByInstrumentClass;
 |};
