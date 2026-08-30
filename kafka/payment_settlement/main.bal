@@ -24,9 +24,20 @@ service kafka:Service on paymentAuthorizedListener {
 // processed record inside a single Ballerina transaction, giving exactly-once
 // semantics: either both the publish and the offset commit succeed, or the
 // transaction is aborted and neither is visible to read-committed consumers.
+// Records whose paymentId was already settled within the TTL window are
+// skipped entirely (including the offset commit, which still proceeds so the
+// duplicate is not redelivered forever).
 function settlePaymentInTransaction(kafka:Caller caller, PaymentAuthorizedConsumerRecord paymentAuthorizedRecord)
         returns error? {
     PaymentAuthorized paymentAuthorized = paymentAuthorizedRecord.value;
+
+    boolean shouldSettle = markProcessedIfAbsent(paymentAuthorized.paymentId);
+    if !shouldSettle {
+        log:printInfo("Skipping duplicate payment authorized event", paymentId = paymentAuthorized.paymentId);
+        check caller->commit();
+        return;
+    }
+
     PaymentSettlement paymentSettlement = toPaymentSettlement(paymentAuthorized);
 
     transaction {

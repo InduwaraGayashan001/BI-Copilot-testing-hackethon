@@ -24,3 +24,16 @@ kafka:ConsumerConfiguration paymentAuthorizedConsumerConfiguration = {
 };
 
 listener kafka:Listener paymentAuthorizedListener = new (kafkaBootstrapServers, paymentAuthorizedConsumerConfiguration);
+
+// Synchronous consumer used only for reconciliation (health snapshot and manual
+// replay). It is never subscribed via the consumer group; partitions are
+// assigned manually so it does not interfere with the group's partition balance.
+final kafka:Consumer reconciliationConsumer = check new (kafkaBootstrapServers, {
+    clientId: "payment-settlement-reconciliation",
+    isolationLevel: "read_committed",
+    autoCommit: false
+});
+
+// Duplicate-suppression cache: paymentId -> expiry epoch seconds. Guarded by a
+// lock since it is read-modify-written from concurrent listener dispatches.
+isolated map<int> processedPaymentIds = {};
