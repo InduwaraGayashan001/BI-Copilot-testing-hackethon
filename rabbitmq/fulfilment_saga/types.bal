@@ -32,15 +32,21 @@ public type ErrorMessage record {|
     string message;
 |};
 
+# Response body returned immediately after a fulfilment request is accepted for processing.
+# The saga runs asynchronously; poll the saga status endpoint for the outcome.
+public type FulfilmentAccepted record {|
+    string orderId;
+    string statusUrl;
+|};
+
 # The distinct stages a fulfilment saga can be in.
 public enum SagaStatus {
     SAGA_STARTED = "STARTED",
+    SAGA_AWAITING_RESERVATION = "AWAITING_RESERVATION",
     SAGA_INVENTORY_RESERVED = "INVENTORY_RESERVED",
     SAGA_PAYMENT_CHARGED = "PAYMENT_CHARGED",
-    SAGA_SHIPPING_DISPATCHED = "SHIPPING_DISPATCHED",
     SAGA_COMPLETED = "COMPLETED",
     SAGA_INVENTORY_RELEASED = "INVENTORY_RELEASED",
-    SAGA_PAYMENT_REFUNDED = "PAYMENT_REFUNDED",
     SAGA_FAILED = "FAILED"
 }
 

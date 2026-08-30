@@ -1,30 +1,33 @@
 import ballerina/http;
 
+function init() returns error? {
+    check initFulfilmentTopology();
+}
+
 service /fulfilment on new http:Listener(httpListenerPort) {
 
-    # Accepts an order fulfilment request and runs the fulfilment saga: reserve inventory,
-    # charge payment, then dispatch shipping — compensating prior steps if a later step fails.
+    # Accepts an order fulfilment request and starts the fulfilment saga asynchronously: the
+    # inventory reservation request is published immediately and this resource returns without
+    # waiting for the reply. The saga is advanced in the background by the reply consumer on
+    # `fulfilment.replies`; poll the saga status endpoint for the outcome.
     #
     # + fulfilmentRequest - the order fulfilment request payload
-    # + return - 202 Accepted once the saga has run to completion or failure (with compensation),
-    # 504 if the inventory reservation reply timed out, or a 500 on other infrastructure failures
+    # + return - 202 Accepted once the reservation request has been published, or a 500 if it
+    # could not be published
     resource function post orders(FulfilmentRequest fulfilmentRequest)
-            returns http:Accepted|http:GatewayTimeout|http:InternalServerError {
-        ReservationResponse|error? sagaResult = runFulfilmentSaga(fulfilmentRequest);
+            returns http:Accepted|http:InternalServerError {
+        error? startResult = startFulfilmentSaga(fulfilmentRequest);
 
-        if sagaResult is error {
-            if sagaResult.message() == RESERVATION_TIMEOUT_ERROR {
-                ErrorMessage errorMessage = {
-                    message: string `Inventory reservation timed out for order ${fulfilmentRequest.orderId}`
-                };
-                return <http:GatewayTimeout>{body: errorMessage};
-            }
-            ErrorMessage errorMessage = {message: "Failed to run fulfilment saga: " + sagaResult.message()};
+        if startResult is error {
+            ErrorMessage errorMessage = {message: "Failed to start fulfilment saga: " + startResult.message()};
             return <http:InternalServerError>{body: errorMessage};
         }
 
-        SagaState? sagaState = getSagaState(fulfilmentRequest.orderId);
-        return <http:Accepted>{body: sagaState};
+        FulfilmentAccepted fulfilmentAccepted = {
+            orderId: fulfilmentRequest.orderId,
+            statusUrl: string `/fulfilment/orders/${fulfilmentRequest.orderId}/saga`
+        };
+        return <http:Accepted>{body: fulfilmentAccepted};
     }
 
     # Reports the current saga state (progress and any compensating actions taken) for an order.

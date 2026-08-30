@@ -10,9 +10,9 @@ configurable string[] rabbitmqFailoverAddresses = [];
 
 configurable int httpListenerPort = 8080;
 
-# Maximum time (in milliseconds) to wait for the inventory reservation reply before
-# responding to the caller with a 504 Gateway Timeout.
-configurable decimal reservationReplyTimeoutMillis = 5000;
-
 # Routing key / queue name that inventory reservation requests are published to.
 const string INVENTORY_RESERVE_QUEUE = "inventory.reserve";
+
+# Durable, shared queue that inventory reservation replies are published back to. The reply
+# consumer correlates each reply to its originating saga using the message's correlation ID.
+const string FULFILMENT_REPLIES_QUEUE = "fulfilment.replies";

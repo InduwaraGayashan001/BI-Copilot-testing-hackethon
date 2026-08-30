@@ -55,18 +55,72 @@ function testChargePaymentFailsForPaymentFailSentinel() {
 }
 
 @test:Config {}
-function testDispatchShippingSucceedsForNormalOrder() returns error? {
+function testRegisterAndTakePendingReservation() {
     FulfilmentRequest fulfilmentRequest = sampleFulfilmentRequest("ORD-6");
-    check dispatchShipping(fulfilmentRequest);
+    registerPendingReservation("CORR-1", fulfilmentRequest);
+
+    FulfilmentRequest? takenRequest = takePendingReservation("CORR-1");
+    test:assertTrue(takenRequest is FulfilmentRequest, msg = "The registered request should be found");
+    if takenRequest is FulfilmentRequest {
+        test:assertEquals(takenRequest.orderId, "ORD-6", msg = "The taken request should match the registered order");
+    }
+
+    FulfilmentRequest? takenAgain = takePendingReservation("CORR-1");
+    test:assertTrue(takenAgain is (), msg = "Taking the same correlation ID twice should return nil");
 }
 
 @test:Config {}
-function testDispatchShippingFailsForShippingFailSentinel() {
-    FulfilmentRequest fulfilmentRequest = sampleFulfilmentRequest("ORD-7", warehouseId = "SHIPPING-FAIL");
-    error? shippingResult = dispatchShipping(fulfilmentRequest);
-    test:assertTrue(shippingResult is error, msg = "Shipping should fail for the SHIPPING-FAIL sentinel warehouse ID");
-    if shippingResult is error {
-        test:assertEquals(shippingResult.message(), "Shipping dispatch failed for order ORD-7",
-                msg = "Error message should describe the shipping failure");
+function testTakePendingReservationReturnsNilForUnknownCorrelationId() {
+    FulfilmentRequest? takenRequest = takePendingReservation("CORR-DOES-NOT-EXIST");
+    test:assertTrue(takenRequest is (), msg = "Taking an unregistered correlation ID should return nil");
+}
+
+@test:Config {}
+function testHandleReservationReplySucceedsAndCompletesSaga() {
+    FulfilmentRequest fulfilmentRequest = sampleFulfilmentRequest("ORD-8");
+    _ = startSaga("ORD-8");
+    registerPendingReservation("CORR-2", fulfilmentRequest);
+
+    handleReservationReply("CORR-2", {orderId: "ORD-8", reserved: true});
+
+    SagaState? sagaState = getSagaState("ORD-8");
+    test:assertTrue(sagaState is SagaState, msg = "The saga should exist after handling the reply");
+    if sagaState is SagaState {
+        test:assertEquals(sagaState.status, SAGA_COMPLETED, msg = "Saga should complete on a successful reservation and payment");
+        test:assertEquals(sagaState.completedSteps, ["reserve-inventory", "charge-payment"],
+                msg = "Both forward steps should be recorded");
+    }
+}
+
+@test:Config {}
+function testHandleReservationReplyDeclinedFailsSaga() {
+    FulfilmentRequest fulfilmentRequest = sampleFulfilmentRequest("ORD-9");
+    _ = startSaga("ORD-9");
+    registerPendingReservation("CORR-3", fulfilmentRequest);
+
+    handleReservationReply("CORR-3", {orderId: "ORD-9", reserved: false, message: "No stock"});
+
+    SagaState? sagaState = getSagaState("ORD-9");
+    test:assertTrue(sagaState is SagaState, msg = "The saga should exist after handling the reply");
+    if sagaState is SagaState {
+        test:assertEquals(sagaState.status, SAGA_FAILED, msg = "Saga should fail when the reservation is declined");
+        test:assertEquals(sagaState.failureReason, "No stock", msg = "Failure reason should come from the reply message");
+    }
+}
+
+@test:Config {}
+function testHandleReservationReplyPaymentFailureReleasesInventory() {
+    FulfilmentRequest fulfilmentRequest = sampleFulfilmentRequest("ORD-10", warehouseId = "PAYMENT-FAIL");
+    _ = startSaga("ORD-10");
+    registerPendingReservation("CORR-4", fulfilmentRequest);
+
+    handleReservationReply("CORR-4", {orderId: "ORD-10", reserved: true});
+
+    SagaState? sagaState = getSagaState("ORD-10");
+    test:assertTrue(sagaState is SagaState, msg = "The saga should exist after handling the reply");
+    if sagaState is SagaState {
+        test:assertEquals(sagaState.status, SAGA_FAILED, msg = "Saga should fail when payment charging fails");
+        test:assertEquals(sagaState.compensatingSteps, ["release-inventory"],
+                msg = "Inventory should be released as the compensating action");
     }
 }

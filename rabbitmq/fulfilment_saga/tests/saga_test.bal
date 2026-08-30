@@ -59,14 +59,13 @@ function testCompleteSagaSetsCompletedStatus() {
     _ = startSaga("SAGA-ORD-5");
     recordSagaStep("SAGA-ORD-5", SAGA_INVENTORY_RESERVED, "reserve-inventory");
     recordSagaStep("SAGA-ORD-5", SAGA_PAYMENT_CHARGED, "charge-payment");
-    recordSagaStep("SAGA-ORD-5", SAGA_SHIPPING_DISPATCHED, "dispatch-shipping");
     completeSaga("SAGA-ORD-5");
 
     SagaState? sagaState = getSagaState("SAGA-ORD-5");
     test:assertTrue(sagaState is SagaState, msg = "The saga should still exist after completing");
     if sagaState is SagaState {
         test:assertEquals(sagaState.status, SAGA_COMPLETED, msg = "Status should move to COMPLETED");
-        test:assertEquals(sagaState.completedSteps.length(), 3, msg = "All three forward steps should be recorded");
+        test:assertEquals(sagaState.completedSteps.length(), 2, msg = "Both forward steps should be recorded");
     }
 }
 

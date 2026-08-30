@@ -4,6 +4,33 @@ import ballerina/time;
 # fulfilled. Keyed by orderId.
 isolated map<SagaState> sagaStore = {};
 
+# In-memory store tracking fulfilment requests awaiting an inventory reservation reply. Keyed by
+# the correlation ID the reservation request was published with, so the reply consumer on
+# `fulfilment.replies` can look up (and remove) the originating request once its reply arrives.
+isolated map<FulfilmentRequest> pendingReservations = {};
+
+# Registers a fulfilment request as pending a reservation reply.
+#
+# + correlationId - the correlation ID the reservation request was published with
+# + fulfilmentRequest - the fulfilment request awaiting a reply
+isolated function registerPendingReservation(string correlationId, FulfilmentRequest fulfilmentRequest) {
+    lock {
+        pendingReservations[correlationId] = fulfilmentRequest.clone();
+    }
+}
+
+# Removes and returns the fulfilment request pending the given correlation ID, if any. Used by
+# the reply consumer to both look up and clear the pending entry in a single step, so a
+# duplicate/redelivered reply cannot be processed twice.
+#
+# + correlationId - the correlation ID the reply arrived with
+# + return - the pending fulfilment request, or () if no request is pending for this correlation ID
+isolated function takePendingReservation(string correlationId) returns FulfilmentRequest? {
+    lock {
+        return pendingReservations.removeIfHasKey(correlationId).clone();
+    }
+}
+
 # Creates and stores the initial (STARTED) saga state for an order.
 #
 # + orderId - the order the saga is being run for

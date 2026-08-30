@@ -42,3 +42,19 @@ listener rabbitmq:Listener inventoryQueueListener = new (rabbitmqHost, rabbitmqP
     virtualHost: rabbitmqVhost,
     failoverAddresses: buildFailoverAddresses()
 });
+
+# Dedicated listener for the fulfilment saga's reply consumer service.
+listener rabbitmq:Listener repliesQueueListener = new (rabbitmqHost, rabbitmqPort, connectionData = {
+    username: rabbitmqUsername,
+    password: rabbitmqPassword,
+    virtualHost: rabbitmqVhost,
+    failoverAddresses: buildFailoverAddresses()
+});
+
+# Declares the durable, shared `fulfilment.replies` queue that inventory reservation replies are
+# published back to. Unlike the previous request-reply flow, this queue is a well-known, durable
+# queue (not a per-request exclusive one), since the reply consumer runs continuously and
+# correlates replies to sagas using the message's correlation ID.
+function initFulfilmentTopology() returns error? {
+    check rabbitmqClient->queueDeclare(FULFILMENT_REPLIES_QUEUE, {durable: true});
+}

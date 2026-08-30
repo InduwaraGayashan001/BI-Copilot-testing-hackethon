@@ -1,26 +1,16 @@
-import ballerina/lang.runtime;
-import ballerina/lang.value;
 import ballerina/log;
-import ballerina/uuid;
 import ballerinax/rabbitmq;
 
-# Error reason used when the inventory service does not reply within the configured timeout.
-public const string RESERVATION_TIMEOUT_ERROR = "ReservationTimeoutError";
-
-# Sentinel value returned by the timeout guard worker when the reservation reply does not
-# arrive within `reservationReplyTimeoutMillis`.
-type TimeoutSignal record {|
-    string signal;
-|};
-
-# Publishes a reservation request for the given fulfilment request to the inventory service on a
-# server-named exclusive reply queue, then waits for the reply up to `reservationReplyTimeoutMillis`.
+# Publishes a reservation request for the given fulfilment request to the inventory service.
+# The reply is expected asynchronously on the shared `fulfilment.replies` queue, correlated by
+# `correlationId`; this function does not wait for it. The saga is advanced by the reply
+# consumer once the reservation response arrives.
 #
 # + fulfilmentRequest - the fulfilment request to reserve inventory for
-# + return - the reservation response on success, or an error (timeout or protocol failure)
-function requestInventoryReservation(FulfilmentRequest fulfilmentRequest) returns ReservationResponse|error {
-    string replyQueueName = check rabbitmqClient->queueAutoGenerate();
-    string correlationId = uuid:createType1AsString();
+# + return - the correlation ID assigned to this reservation request, or an error if the
+# request could not be published
+function publishInventoryReservation(FulfilmentRequest fulfilmentRequest) returns string|error {
+    string correlationId = fulfilmentRequest.orderId;
 
     ReservationRequest reservationRequest = {
         orderId: fulfilmentRequest.orderId,
@@ -28,7 +18,7 @@ function requestInventoryReservation(FulfilmentRequest fulfilmentRequest) return
         items: fulfilmentRequest.items
     };
     rabbitmq:BasicProperties properties = {
-        replyTo: replyQueueName,
+        replyTo: FULFILMENT_REPLIES_QUEUE,
         correlationId: correlationId,
         contentType: "application/json"
     };
@@ -38,40 +28,7 @@ function requestInventoryReservation(FulfilmentRequest fulfilmentRequest) return
         properties: properties
     };
     check rabbitmqClient->publishMessage(reservationMessage);
-
-    decimal timeoutSeconds = reservationReplyTimeoutMillis / 1000.0d;
-
-    worker ReplyWaiter returns ReservationResponse|error {
-        return consumeReservationReply(replyQueueName);
-    }
-
-    worker TimeoutGuard returns TimeoutSignal {
-        runtime:sleep(timeoutSeconds);
-        return {signal: "TIMEOUT"};
-    }
-
-    ReservationResponse|error|TimeoutSignal waitResult = wait ReplyWaiter | TimeoutGuard;
-
-    if waitResult is TimeoutSignal {
-        return error(RESERVATION_TIMEOUT_ERROR,
-                message = string `Timed out waiting for inventory reservation reply for order ${fulfilmentRequest.orderId}`);
-    }
-    return waitResult;
-}
-
-# Polls the given server-named reply queue until a message arrives, then decodes it into a
-# `ReservationResponse`. Runs inside a worker so the caller can race it against a timeout.
-#
-# + replyQueueName - the exclusive, server-named queue to poll for the reply
-# + return - the decoded reservation response, or an error if consuming/decoding fails
-isolated function consumeReservationReply(string replyQueueName) returns ReservationResponse|error {
-    while true {
-        rabbitmq:AnydataMessage|rabbitmq:Error consumeResult = rabbitmqClient->consumeMessage(replyQueueName);
-        if consumeResult is rabbitmq:AnydataMessage {
-            return value:ensureType(consumeResult.content);
-        }
-        runtime:sleep(0.1);
-    }
+    return correlationId;
 }
 
 # Simulates charging payment for an order. The sentinel warehouse ID `PAYMENT-FAIL` always
@@ -85,17 +42,6 @@ isolated function chargePayment(FulfilmentRequest fulfilmentRequest) returns err
     }
 }
 
-# Simulates dispatching shipping for an order. The sentinel warehouse ID `SHIPPING-FAIL` always
-# fails, making the failure/compensation path easy to exercise from tests.
-#
-# + fulfilmentRequest - the fulfilment request being shipped
-# + return - () on success, or an error describing why dispatch failed
-isolated function dispatchShipping(FulfilmentRequest fulfilmentRequest) returns error? {
-    if fulfilmentRequest.warehouseId == "SHIPPING-FAIL" {
-        return error(string `Shipping dispatch failed for order ${fulfilmentRequest.orderId}`);
-    }
-}
-
 # Simulates releasing a previously reserved inventory hold. This is the compensating action for
 # a successful inventory reservation, run when a later saga step (payment) fails.
 #
@@ -104,37 +50,46 @@ isolated function releaseInventory(FulfilmentRequest fulfilmentRequest) {
     log:printInfo(string `Releasing inventory reservation for order ${fulfilmentRequest.orderId}`);
 }
 
-# Simulates refunding a previously captured payment. This is the compensating action for a
-# successful payment charge, run when a later saga step (shipping) fails.
-#
-# + fulfilmentRequest - the fulfilment request whose payment should be refunded
-isolated function refundPayment(FulfilmentRequest fulfilmentRequest) {
-    log:printInfo(string `Refunding payment for order ${fulfilmentRequest.orderId}`);
-}
-
-# Runs the full order fulfilment saga for a single request: reserve inventory, charge payment,
-# then dispatch shipping. Each step's progress is tracked in the saga state store. If payment
-# fails after a successful reservation, the inventory is released. If shipping fails after a
-# successful charge, the payment is refunded (which implicitly leaves the inventory released
-# as well, since a shipment can only be attempted after payment succeeds).
+# Starts the fulfilment saga for a single request: records the initial saga state, registers the
+# request as pending a reservation reply, and publishes the reservation request. Returns
+# immediately after publishing; the saga is advanced asynchronously by the reply consumer on
+# `fulfilment.replies`.
 #
 # + fulfilmentRequest - the order fulfilment request driving the saga
-# + return - the final reservation response when the saga fails at the reservation step, () on
-# full success (or on failure with recorded compensation), or an error for infrastructure
-# failures unrelated to the business steps themselves
-function runFulfilmentSaga(FulfilmentRequest fulfilmentRequest) returns ReservationResponse|error? {
+# + return - () once the reservation request has been published, or an error if publishing failed
+function startFulfilmentSaga(FulfilmentRequest fulfilmentRequest) returns error? {
     string orderId = fulfilmentRequest.orderId;
     _ = startSaga(orderId);
 
-    ReservationResponse|error reservationResponse = requestInventoryReservation(fulfilmentRequest);
-    if reservationResponse is error {
-        failSaga(orderId, reservationResponse.message());
-        return reservationResponse;
+    string|error correlationId = publishInventoryReservation(fulfilmentRequest);
+    if correlationId is error {
+        failSaga(orderId, correlationId.message());
+        return correlationId;
     }
+
+    registerPendingReservation(correlationId, fulfilmentRequest);
+    recordSagaStep(orderId, SAGA_AWAITING_RESERVATION, "request-inventory-reservation");
+}
+
+# Handles a reservation reply consumed from `fulfilment.replies`: looks up the saga the reply
+# belongs to (by correlation ID), then either advances it (charging payment on a successful
+# reservation) or fails it (declined reservation). Payment failure triggers the compensating
+# inventory release.
+#
+# + correlationId - the correlation ID the reply arrived with, linking it back to its saga
+# + reservationResponse - the decoded reservation response
+function handleReservationReply(string correlationId, ReservationResponse reservationResponse) {
+    FulfilmentRequest? fulfilmentRequest = takePendingReservation(correlationId);
+    if fulfilmentRequest is () {
+        log:printError(string `No pending saga found for correlation ID ${correlationId}; ignoring reply.`);
+        return;
+    }
+
+    string orderId = fulfilmentRequest.orderId;
     if !reservationResponse.reserved {
         string reservationFailureReason = reservationResponse?.message ?: "Inventory reservation was declined";
         failSaga(orderId, reservationFailureReason);
-        return reservationResponse;
+        return;
     }
     recordSagaStep(orderId, SAGA_INVENTORY_RESERVED, "reserve-inventory");
 
@@ -146,18 +101,5 @@ function runFulfilmentSaga(FulfilmentRequest fulfilmentRequest) returns Reservat
         return;
     }
     recordSagaStep(orderId, SAGA_PAYMENT_CHARGED, "charge-payment");
-
-    error? shippingResult = dispatchShipping(fulfilmentRequest);
-    if shippingResult is error {
-        refundPayment(fulfilmentRequest);
-        recordCompensation(orderId, "refund-payment");
-        releaseInventory(fulfilmentRequest);
-        recordCompensation(orderId, "release-inventory");
-        failSaga(orderId, shippingResult.message());
-        return;
-    }
-    recordSagaStep(orderId, SAGA_SHIPPING_DISPATCHED, "dispatch-shipping");
-
     completeSaga(orderId);
-    return;
 }
