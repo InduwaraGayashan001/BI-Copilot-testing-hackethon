@@ -16,3 +16,11 @@ public type ShipmentStatus record {|
     string statusAt;
     string exceptionReason?;
 |};
+
+// Result of draining and reconciling messages from SHIPMENT.STATUS.REPLAY.
+public type ReconcileResult record {|
+    int batchesProcessed;
+    int messagesProcessed;
+    int messagesInvalid;
+    int messagesPoisoned;
+|};

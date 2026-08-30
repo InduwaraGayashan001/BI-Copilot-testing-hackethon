@@ -19,19 +19,43 @@ listener jms:Listener shipmentStatusListener = check new (
 );
 
 // Separate connection and session used to publish messages that fail fixed-width parsing onward
-// to SHIPMENT.STATUS.INVALID.
+// to SHIPMENT.STATUS.INVALID, and to publish accepted/exception events to their routed queues.
 final jms:Connection shipmentStatusPublishConnection = check new (
     initialContextFactory = "org.apache.activemq.jndi.ActiveMQInitialContextFactory",
     providerUrl = providerUrl
 );
 
-final jms:Session shipmentStatusPublishSession = check createJmsSession(shipmentStatusPublishConnection);
+final jms:Session shipmentStatusPublishSession = check createJmsSession(shipmentStatusPublishConnection, jms:AUTO_ACKNOWLEDGE);
 
 final jms:MessageProducer shipmentStatusInvalidProducer = check shipmentStatusPublishSession.createProducer({
     'type: jms:QUEUE,
     name: shipmentStatusInvalidQueue
 });
 
-function createJmsSession(jms:Connection connection) returns jms:Session|error {
-    return connection->createSession(jms:AUTO_ACKNOWLEDGE);
+// Unbound producer used with sendTo() to publish accepted and exception events to whichever
+// queue carrier-based routing resolves to.
+final jms:MessageProducer shipmentStatusRoutedProducer = check shipmentStatusPublishSession.createProducer();
+
+// Unbound producer used with sendTo() to route poison replay messages to the DLQ during
+// reconciliation.
+final jms:MessageProducer shipmentStatusDlqProducer = check shipmentStatusPublishSession.createProducer();
+
+// Separate connection and transacted session used to drain SHIPMENT.STATUS.REPLAY during the
+// nightly reconciliation window, with one commit per batch.
+final jms:Connection shipmentStatusReplayConnection = check new (
+    initialContextFactory = "org.apache.activemq.jndi.ActiveMQInitialContextFactory",
+    providerUrl = providerUrl
+);
+
+final jms:Session shipmentStatusReplaySession = check createJmsSession(shipmentStatusReplayConnection, jms:SESSION_TRANSACTED);
+
+final jms:MessageConsumer shipmentStatusReplayConsumer = check shipmentStatusReplaySession.createConsumer(
+    destination = {
+        'type: jms:QUEUE,
+        name: shipmentStatusReplayQueue
+    }
+);
+
+function createJmsSession(jms:Connection connection, jms:AcknowledgementMode ackMode) returns jms:Session|error {
+    return connection->createSession(ackMode);
 }

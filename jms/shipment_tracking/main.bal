@@ -1,5 +1,8 @@
+import ballerina/http;
 import ballerina/log;
 import ballerinax/java.jms;
+
+listener http:Listener shipmentTrackingControlListener = new (servicePort);
 
 service "shipment-status-consumer" on shipmentStatusListener {
 
@@ -25,6 +28,7 @@ service "shipment-status-consumer" on shipmentStatusListener {
         }
 
         processShipmentStatus(shipmentStatus);
+        check publishShipmentStatus(shipmentStatus);
         check caller->acknowledge(message);
     }
 }
@@ -37,4 +41,27 @@ function processShipmentStatus(ShipmentStatus shipmentStatus) {
             carrierCode = shipmentStatus.carrierCode,
             status = shipmentStatus.status,
             locationCode = shipmentStatus.locationCode);
+}
+
+service /shipments on shipmentTrackingControlListener {
+
+    # Drains SHIPMENT.STATUS.REPLAY in configurable batches for the nightly reconciliation
+    # window, committing the transacted session once per batch. Uses a non-blocking receive to
+    # detect an empty queue rather than waiting out a timeout. Replay messages that fail
+    # fixed-width parsing are routed to SHIPMENT.STATUS.INVALID; messages that have already been
+    # attempted maxProcessingAttempts times are treated as poison messages and routed to
+    # SHIPMENT.STATUS.DLQ instead of being retried further.
+    #
+    # + return - A summary of the reconciliation run, or an error response
+    resource function post reconcile() returns ReconcileResult|http:InternalServerError {
+        ReconcileResult|error result = drainReplayQueue();
+        if result is error {
+            return {
+                body: {
+                    message: "Failed to reconcile SHIPMENT.STATUS.REPLAY: " + result.message()
+                }
+            };
+        }
+        return result;
+    }
 }
