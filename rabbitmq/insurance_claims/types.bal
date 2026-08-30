@@ -35,9 +35,10 @@ public type ReplayResult record {|
     string[] claimIds;
 |};
 
-# Response body returned after a purge request completes.
-public type PurgeResult record {|
-    string message;
+# Response body for the dead-letter stats endpoint, breaking queue depth down by claim type.
+public type DeadLetterStats record {|
+    int totalCount;
+    map<int> countByClaimType;
 |};
 
 # Optional request body for the dead-letter replay endpoint.

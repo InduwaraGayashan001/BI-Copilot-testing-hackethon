@@ -28,9 +28,8 @@ service /claims on new http:Listener(httpListenerPort) {
 
         rabbitmq:Error? publishResult = rabbitmqClient->publishMessage(claimMessage);
         if publishResult is rabbitmq:Error {
-            return <http:InternalServerError>{
-                body: {message: "Failed to publish claim submission: " + publishResult.message()}
-            };
+            ErrorMessage errorMessage = {message: "Failed to publish claim submission: " + publishResult.message()};
+            return <http:InternalServerError>{body: errorMessage};
         }
 
         ClaimAccepted claimAccepted = {
@@ -86,9 +85,10 @@ service /claims on new http:Listener(httpListenerPort) {
             };
             rabbitmq:Error? publishResult = rabbitmqClient->publishMessage(replayMessage);
             if publishResult is rabbitmq:Error {
-                return <http:InternalServerError>{
-                    body: {message: "Failed to replay claim " + deadLetterMessage.claimId + ": " + publishResult.message()}
+                ErrorMessage errorMessage = {
+                    message: "Failed to replay claim " + deadLetterMessage.claimId + ": " + publishResult.message()
                 };
+                return <http:InternalServerError>{body: errorMessage};
             }
             replayedClaimIds.push(deadLetterMessage.claimId);
         }
@@ -96,23 +96,11 @@ service /claims on new http:Listener(httpListenerPort) {
         return {replayedCount: replayedClaimIds.length(), claimIds: replayedClaimIds};
     }
 
-    # Purges the dead-letter queue. Disabled by default, guarded by the `allowDeadLetterPurge` flag.
+    # Reports dead-letter queue depth broken down by claim type, without consuming any messages.
+    # The breakdown is derived from the in-memory record kept when a claim is dead-lettered.
     #
-    # + return - 200 OK on success, or 403 Forbidden when purging is disabled
-    resource function delete claims/dead\-letter() returns PurgeResult|http:Forbidden|http:InternalServerError {
-        if !allowDeadLetterPurge {
-            return <http:Forbidden>{
-                body: {message: "Dead-letter purge is disabled. Set 'allowDeadLetterPurge' to true to enable it."}
-            };
-        }
-
-        rabbitmq:Error? purgeResult = rabbitmqClient->queuePurge(CLAIMS_DEAD_LETTER_QUEUE);
-        if purgeResult is rabbitmq:Error {
-            return <http:InternalServerError>{
-                body: {message: "Failed to purge dead-letter queue: " + purgeResult.message()}
-            };
-        }
-        clearDeadLetterMessages();
-        return {message: "Dead-letter queue purged successfully."};
+    # + return - 200 OK with the total count and the per-claim-type breakdown
+    resource function get claims/dead\-letter/stats() returns DeadLetterStats {
+        return buildDeadLetterStats();
     }
 }

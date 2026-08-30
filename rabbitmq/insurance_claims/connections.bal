@@ -17,17 +17,6 @@ listener rabbitmq:Listener claimsQueueListener = new (rabbitmqHost, rabbitmqPort
 });
 
 function initClaimsTopology() returns error? {
-    // Best-effort cleanup so re-declaring queues with new dead-letter arguments does not fail
-    // with a PRECONDITION_FAILED error when a queue already exists with different arguments
-    // (e.g. from a previous version of this topology). A `queueDelete` on a queue that does not
-    // exist closes the underlying AMQP channel with a protocol error, so each delete attempt
-    // uses its own short-lived client/channel to avoid poisoning the shared `rabbitmqClient`.
-    check deleteQueueIfExists(CLAIMS_AUTO_QUEUE);
-    check deleteQueueIfExists(CLAIMS_HEALTH_QUEUE);
-    check deleteQueueIfExists(CLAIMS_PROPERTY_QUEUE);
-    check deleteQueueIfExists(CLAIMS_RETRY_QUEUE);
-    check deleteQueueIfExists(CLAIMS_DEAD_LETTER_QUEUE);
-
     // Main topic exchange that claim submissions are published to.
     check rabbitmqClient->exchangeDeclare(CLAIMS_EXCHANGE, rabbitmq:TOPIC_EXCHANGE, {durable: true});
 
@@ -35,12 +24,12 @@ function initClaimsTopology() returns error? {
     check rabbitmqClient->exchangeDeclare(CLAIMS_DLX_EXCHANGE, rabbitmq:TOPIC_EXCHANGE, {durable: true});
 
     // Terminal dead-letter queue, catches everything published to the DLX.
-    check rabbitmqClient->queueDeclare(CLAIMS_DEAD_LETTER_QUEUE, {durable: true});
+    check declareQueue(CLAIMS_DEAD_LETTER_QUEUE, {durable: true});
     check rabbitmqClient->queueBind(CLAIMS_DEAD_LETTER_QUEUE, CLAIMS_DLX_EXCHANGE, CLAIMS_DEAD_LETTER_BINDING_KEY);
 
     // Retry queue: messages sit here for `retryTtlMillis` then dead-letter back into the main
     // exchange (using their original routing key) for a delayed reprocessing attempt.
-    check rabbitmqClient->queueDeclare(CLAIMS_RETRY_QUEUE, {
+    check declareQueue(CLAIMS_RETRY_QUEUE, {
         durable: true,
         arguments: {
             [ARG_DEAD_LETTER_EXCHANGE]: CLAIMS_EXCHANGE,
@@ -48,49 +37,65 @@ function initClaimsTopology() returns error? {
         }
     });
 
-    // Claim queues: on nack(requeue = false) messages are dead-lettered into the DLX.
-    check rabbitmqClient->queueDeclare(CLAIMS_AUTO_QUEUE, {
+    // Single claim intake queue: on nack(requeue = false) messages are dead-lettered into the DLX.
+    check declareQueue(CLAIMS_ALL_QUEUE, {
         durable: true,
         arguments: {
             [ARG_DEAD_LETTER_EXCHANGE]: CLAIMS_DLX_EXCHANGE
         }
     });
-    check rabbitmqClient->queueDeclare(CLAIMS_HEALTH_QUEUE, {
-        durable: true,
-        arguments: {
-            [ARG_DEAD_LETTER_EXCHANGE]: CLAIMS_DLX_EXCHANGE
-        }
-    });
-    check rabbitmqClient->queueDeclare(CLAIMS_PROPERTY_QUEUE, {
-        durable: true,
-        arguments: {
-            [ARG_DEAD_LETTER_EXCHANGE]: CLAIMS_DLX_EXCHANGE
-        }
-    });
-
-    check rabbitmqClient->queueBind(CLAIMS_AUTO_QUEUE, CLAIMS_EXCHANGE, CLAIMS_AUTO_BINDING_KEY);
-    check rabbitmqClient->queueBind(CLAIMS_HEALTH_QUEUE, CLAIMS_EXCHANGE, CLAIMS_HEALTH_BINDING_KEY);
-    check rabbitmqClient->queueBind(CLAIMS_PROPERTY_QUEUE, CLAIMS_EXCHANGE, CLAIMS_PROPERTY_BINDING_KEY);
+    check rabbitmqClient->queueBind(CLAIMS_ALL_QUEUE, CLAIMS_EXCHANGE, CLAIMS_ALL_BINDING_KEY);
 }
 
-# Deletes a queue if it exists, tolerating the case where it does not. A dedicated, short-lived
-# client/channel is used so that a NOT_FOUND protocol error (which closes the AMQP channel it
-# occurred on) does not poison the shared `rabbitmqClient` used for the rest of the topology
-# setup and for publishing.
+# Creates a fresh, short-lived client/channel. Used for one-off operations that might fail
+# with a channel-closing protocol error, so that failure never affects the long-lived
+# `rabbitmqClient` used for publishing and for the rest of the topology setup.
 #
-# + queueName - the name of the queue to delete
-# + return - () when the queue was deleted or did not exist, or an error for unexpected failures
-function deleteQueueIfExists(string queueName) returns error? {
-    rabbitmq:Client|rabbitmq:Error cleanupClient = new (rabbitmqHost, rabbitmqPort, connectionData = {
+# + return - a new client, or an error if the connection could not be established
+function newShortLivedClient() returns rabbitmq:Client|rabbitmq:Error {
+    return new (rabbitmqHost, rabbitmqPort, connectionData = {
         username: rabbitmqUsername,
         password: rabbitmqPassword,
         virtualHost: rabbitmqVhost
     });
-    if cleanupClient is rabbitmq:Error {
-        return cleanupClient;
+}
+
+# Declares a queue, self-healing when it already exists with different arguments. Both the
+# initial attempt and the delete-and-retry step (on a PRECONDITION_FAILED mismatch) run on
+# their own fresh, short-lived client, since any failed operation closes the AMQP channel it
+# ran on and permanently poisons that client for further calls.
+#
+# + queueName - the name of the queue to declare
+# + config - the queue configuration (durability, arguments, etc.)
+# + return - () on success, or an error if the retry also fails
+function declareQueue(string queueName, rabbitmq:QueueConfig config) returns error? {
+    rabbitmq:Client declareClient = check newShortLivedClient();
+    rabbitmq:Error? declareResult = declareClient->queueDeclare(queueName, config);
+    if declareResult is () {
+        log:printInfo(string `Declared queue '${queueName}' on first attempt.`);
+        return;
     }
-    rabbitmq:Error? deleteResult = cleanupClient->queueDelete(queueName);
+
+    log:printError(string `Initial declare failed for queue '${queueName}': ${declareResult.message()}`);
+    string declareErrorMessage = declareResult.message();
+    if !declareErrorMessage.includes("PRECONDITION_FAILED") {
+        return declareResult;
+    }
+
+    log:printInfo(string `Queue '${queueName}' exists with different arguments; deleting it before recreating.`);
+    rabbitmq:Client deleteClient = check newShortLivedClient();
+    rabbitmq:Error? deleteResult = deleteClient->queueDelete(queueName);
     if deleteResult is rabbitmq:Error {
-        log:printInfo(string `Skipping delete for queue '${queueName}' (it may not exist yet): ${deleteResult.message()}`);
+        log:printError(string `Delete failed for queue '${queueName}': ${deleteResult.message()}`);
+        return deleteResult;
     }
+    log:printInfo(string `Deleted queue '${queueName}'; redeclaring.`);
+
+    rabbitmq:Client retryClient = check newShortLivedClient();
+    rabbitmq:Error? retryResult = retryClient->queueDeclare(queueName, config);
+    if retryResult is rabbitmq:Error {
+        log:printError(string `Retry declare failed for queue '${queueName}': ${retryResult.message()}`);
+        return retryResult;
+    }
+    log:printInfo(string `Redeclared queue '${queueName}' successfully.`);
 }

@@ -46,3 +46,21 @@ function processClaim(ClaimSubmission claimSubmission) returns error? {
         return error(string `Invalid claim amount for claim ${claimSubmission.claimId}`);
     }
 }
+
+# Routes a claim submission consumed from the single `claims.all` queue to its type-specific
+# processing logic based on `claimType`. All claim types currently share the same validation,
+# but this keeps the branching point explicit so type-specific rules can be added later.
+#
+# + claimSubmission - the claim submission to process
+# + return - () on success, or an error describing why processing failed
+function processClaimByType(ClaimSubmission claimSubmission) returns error? {
+    string claimType = claimSubmission.claimType.trim().toLowerAscii();
+    if claimType == "auto" {
+        return processClaim(claimSubmission);
+    } else if claimType == "health" {
+        return processClaim(claimSubmission);
+    } else if claimType == "property" {
+        return processClaim(claimSubmission);
+    }
+    return processClaim(claimSubmission);
+}
