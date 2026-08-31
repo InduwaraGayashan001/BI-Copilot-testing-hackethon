@@ -17,3 +17,15 @@ public type DeviceReading record {|
     string readingAt;
 |};
 
+// Represents an alert published to the NATS subject telemetry.alerts when a reading's
+// metric value crosses the configured threshold for its device type.
+public type TelemetryAlert record {|
+    string region;
+    string siteId;
+    string deviceType;
+    string metric;
+    decimal value;
+    decimal threshold;
+    string readingAt;
+|};
+

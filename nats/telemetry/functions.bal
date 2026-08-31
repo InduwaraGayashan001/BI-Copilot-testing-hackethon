@@ -1,8 +1,61 @@
 import ballerina/log;
 import ballerina/time;
+import ballerinax/nats;
 
 // Running count of readings dropped for being older than stalenessWindowSeconds.
 int staleReadingCount = 0;
+
+// Creates the TELEMETRY_HOT stream if it does not exist, or loads the existing one otherwise.
+function initTelemetryHotStream() returns nats:Error? {
+    check jetStreamClient->addStream(telemetryHotStreamConfig);
+}
+
+// Publishes a fresh reading to the TELEMETRY_HOT JetStream stream so the most recent
+// readings per device subject are retained in memory.
+function publishToHotStream(DeviceReading deviceReading) returns nats:Error? {
+    string subject = string `telemetry.${deviceReading.region}.${deviceReading.siteId}.${deviceReading.deviceType}`;
+    byte[] content = deviceReading.toJsonString().toBytes();
+    nats:JetStreamMessage message = {
+        content,
+        subject
+    };
+    check jetStreamClient->publishMessage(message);
+}
+
+// Returns the configured alert threshold for the reading's device type, or () if no
+// threshold has been configured for that device type.
+function getAlertThreshold(DeviceReading deviceReading) returns decimal? {
+    return deviceTypeAlertThresholds[deviceReading.deviceType];
+}
+
+// Publishes an alert to telemetry.alerts when the reading's metric value crosses
+// (exceeds) the configured threshold for its device type.
+function publishAlertIfThresholdCrossed(DeviceReading deviceReading) returns nats:Error? {
+    decimal? threshold = getAlertThreshold(deviceReading);
+    if threshold is () {
+        return;
+    }
+    if deviceReading.value <= threshold {
+        return;
+    }
+    TelemetryAlert telemetryAlert = {
+        region: deviceReading.region,
+        siteId: deviceReading.siteId,
+        deviceType: deviceReading.deviceType,
+        metric: deviceReading.metric,
+        value: deviceReading.value,
+        threshold,
+        readingAt: deviceReading.readingAt
+    };
+    nats:AnydataMessage message = {
+        content: telemetryAlert,
+        subject: "telemetry.alerts"
+    };
+    check natsClient->publishMessage(message);
+    log:printWarn(string `Alert: ${telemetryAlert.metric}=${telemetryAlert.value} for `
+            + string `${telemetryAlert.region}/${telemetryAlert.siteId}/${telemetryAlert.deviceType} `
+            + string `crossed threshold ${telemetryAlert.threshold}`);
+}
 
 // Returns true if the reading's readingAt timestamp is older than stalenessWindowSeconds
 // relative to now. A readingAt value that cannot be parsed is treated as stale so it does
@@ -28,9 +81,22 @@ function dropStaleReading(DeviceReading deviceReading) {
             + string `metric=${deviceReading.metric} readingAt=${deviceReading.readingAt} (staleCount=${staleReadingCount})`);
 }
 
-// Processes a fresh (non-stale) reading. Replace with the actual downstream handling logic.
+// Processes a fresh (non-stale) reading: retains it in the TELEMETRY_HOT stream and
+// raises an alert if its metric value crosses the configured threshold for its device type.
 function processReading(DeviceReading deviceReading) {
     log:printInfo(string `Reading ${deviceReading.metric}=${deviceReading.value} from `
             + string `${deviceReading.region}/${deviceReading.siteId}/${deviceReading.deviceType} at ${deviceReading.readingAt}`);
+
+    nats:Error? hotStreamResult = publishToHotStream(deviceReading);
+    if hotStreamResult is nats:Error {
+        log:printError(string `Failed to publish reading for ${deviceReading.region}/${deviceReading.siteId}/`
+                + string `${deviceReading.deviceType} to ${telemetryHotStreamName}`, 'error = hotStreamResult);
+    }
+
+    nats:Error? alertResult = publishAlertIfThresholdCrossed(deviceReading);
+    if alertResult is nats:Error {
+        log:printError(string `Failed to publish alert for ${deviceReading.region}/${deviceReading.siteId}/`
+                + string `${deviceReading.deviceType}`, 'error = alertResult);
+    }
 }
 
