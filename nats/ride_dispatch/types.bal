@@ -7,3 +7,18 @@ public type RideRequest record {|
     decimal pickupLng;
     string requestedAt;
 |};
+
+// Represents a driver ETA lookup request published to the NATS subject drivers.eta.{city}
+public type DriverEtaRequest record {|
+    string rideId;
+    string city;
+    decimal pickupLat;
+    decimal pickupLng;
+|};
+
+// Represents the driver ETA reply received for a DriverEtaRequest
+public type DriverEtaResponse record {|
+    string rideId;
+    string driverId;
+    decimal etaMinutes;
+|};

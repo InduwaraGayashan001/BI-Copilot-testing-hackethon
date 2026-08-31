@@ -14,3 +14,15 @@ final nats:RetryConfig natsRetryConfig = {
     reconnectWait: reconnectWait,
     connectionTimeout: connectionTimeout
 };
+
+// Timeout (in seconds) to wait for a driver ETA reply on the request-reply call.
+configurable decimal driverEtaTimeout = 5;
+
+// Caps how many messages/bytes the dispatch subscription will buffer while awaiting processing.
+configurable int subscriptionMaxPendingMessages = 1000;
+configurable int subscriptionMaxPendingBytes = 1048576;
+
+final nats:PendingLimits dispatchPendingLimits = {
+    maxMessages: subscriptionMaxPendingMessages,
+    maxBytes: subscriptionMaxPendingBytes
+};
