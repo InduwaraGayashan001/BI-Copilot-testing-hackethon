@@ -8,15 +8,15 @@ final nats:SecureSocket telemetrySecureSocket = {
     }
 };
 
-// Token-based authentication credentials for the NATS server.
-final nats:Tokens telemetryAuthTokens = {
-    token: natsAuthToken
+// Username/password authentication credentials for the NATS server.
+final nats:Credentials telemetryAuthCredentials = {
+    username: natsUsername,
+    password: natsPassword
 };
 
-// Shared NATS client used to publish alerts directly and to back the JetStream client
-// used for the TELEMETRY_HOT stream.
-final nats:Client natsClient = check new (natsUrl, connectionName = connectionName, auth = telemetryAuthTokens,
-    secureSocket = telemetrySecureSocket);
-
-final nats:JetStreamClient jetStreamClient = check new (natsClient);
+// Shared NATS client used to publish alerts. noEcho is enabled so this connection never
+// receives back the alert messages it publishes to telemetry.alerts, even though the
+// listener below subscribes to telemetry.> which would otherwise include that subject.
+final nats:Client natsClient = check new (natsUrl, connectionName = connectionName, auth = telemetryAuthCredentials,
+    secureSocket = telemetrySecureSocket, noEcho = true);
 

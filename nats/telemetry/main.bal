@@ -1,11 +1,6 @@
 import ballerina/log;
 import ballerinax/nats;
 
-// Ensures the TELEMETRY_HOT stream exists before the listener below starts consuming.
-function init() returns error? {
-    check initTelemetryHotStream();
-}
-
 // Subscribes to every device subject under telemetry using the '>' wildcard, which matches
 // one or more trailing tokens. Readings arrive on subjects such as
 // telemetry.eu-west.store-42.fridge (telemetry.{region}.{siteId}.{deviceType}) - since the
@@ -18,8 +13,8 @@ function init() returns error? {
     subject: "telemetry.>",
     pendingLimits: telemetryPendingLimits
 }
-service nats:Service on new nats:Listener(natsUrl, connectionName = connectionName, auth = telemetryAuthTokens,
-        secureSocket = telemetrySecureSocket, validation = true) {
+service nats:Service on new nats:Listener(natsUrl, connectionName = connectionName, auth = telemetryAuthCredentials,
+        secureSocket = telemetrySecureSocket, noEcho = true, validation = true) {
 
     remote function onMessage(DeviceReading deviceReading) returns error? {
         boolean stale = isStaleReading(deviceReading);
