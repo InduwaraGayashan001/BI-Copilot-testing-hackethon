@@ -2,7 +2,6 @@ import ballerinax/nats;
 
 configurable string natsUrl = "nats://localhost:4222";
 configurable string connectionName = "ride-dispatch-service";
-configurable string queueGroupName = "ride-dispatch-workers";
 
 // Reconnect retry configuration for the NATS connection.
 configurable int maxReconnect = 60;
@@ -15,8 +14,9 @@ final nats:RetryConfig natsRetryConfig = {
     connectionTimeout: connectionTimeout
 };
 
-// Timeout (in seconds) to wait for a driver ETA reply on the request-reply call.
-configurable decimal driverEtaTimeout = 5;
+// Cities this deployment serves. Ride requests for any other city are published
+// to rides.rejected instead of being dispatched.
+configurable string[] servedCities = ["colombo"];
 
 // Caps how many messages/bytes the dispatch subscription will buffer while awaiting processing.
 configurable int subscriptionMaxPendingMessages = 1000;

@@ -10,18 +10,18 @@ function publishRideRequest(RideRequest rideRequest) returns nats:Error? {
     check natsClient->publishMessage(message);
 }
 
-// Publishes a driver ETA lookup request to drivers.eta.{city} and waits for the reply
-// using the request-reply API, bounded by the configurable driverEtaTimeout.
-function lookupDriverEta(DriverEtaRequest etaRequest) returns DriverEtaResponse|nats:Error {
-    string subject = string `drivers.eta.${etaRequest.city}`;
-    nats:AnydataMessage requestMessage = {
-        content: etaRequest,
-        subject: subject
+// Publishes a ride request that falls outside the served cities to rides.rejected,
+// annotated with the reason it was rejected.
+function publishRejectedRideRequest(RideRequest rideRequest, string reason) returns nats:Error? {
+    RejectedRideRequest rejectedRideRequest = {...rideRequest, reason};
+    nats:AnydataMessage message = {
+        content: rejectedRideRequest,
+        subject: "rides.rejected"
     };
-    nats:AnydataMessage reply = check natsClient->requestMessage(requestMessage, driverEtaTimeout);
-    DriverEtaResponse|error etaResponse = reply.content.cloneWithType(DriverEtaResponse);
-    if etaResponse is error {
-        return error nats:Error("Failed to bind driver ETA response", etaResponse);
-    }
-    return etaResponse;
+    check natsClient->publishMessage(message);
+}
+
+// Returns true if the given city is served by this deployment.
+function isCityServed(string city) returns boolean {
+    return servedCities.indexOf(city) is int;
 }
