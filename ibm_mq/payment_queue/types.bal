@@ -11,15 +11,17 @@ public type PaymentInstruction record {|
     string? remittanceInformation;
 |};
 
-// Response returned when a payment instruction has been successfully queued.
-public type PaymentAccepted record {|
-    string instructionId;
-    string correlationId;
-    string status;
-|};
-
 // Generic error response payload.
 public type ErrorDetails record {|
     string message;
+    int? reasonCode;
     string timestamp;
+|};
+
+// Represents a payment response read back from PAYMENT.RESPONSES for the
+// originating request.
+public type PaymentResponse record {|
+    string instructionId;
+    string correlationId;
+    string status;
 |};

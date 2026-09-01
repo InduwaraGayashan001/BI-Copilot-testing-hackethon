@@ -13,3 +13,8 @@ final ibmmq:Queue paymentInstructionsQueue = check paymentQueueManager.accessQue
     paymentInstructionsQueueName,
     ibmmq:MQOO_OUTPUT
 );
+
+final ibmmq:Queue paymentResponsesQueue = check paymentQueueManager.accessQueue(
+    paymentResponsesQueueName,
+    ibmmq:MQOO_INPUT_AS_Q_DEF
+);
