@@ -3,7 +3,7 @@ import ballerinax/ibm.ibmmq;
 
 @ibmmq:ServiceConfig {
     topicName: marketDataTopicName,
-    consumerType: ibmmq:DURABLE,
+    consumerType: ibmmq:SHARED_DURABLE,
     subscriberName: subscriberName,
     sessionAckMode: ibmmq:CLIENT_ACKNOWLEDGE,
     messageSelector: instrumentClassSelector,
@@ -13,10 +13,13 @@ import ballerinax/ibm.ibmmq;
 service ibmmq:Service on marketDataListener {
 
     # Handles an incoming market data price tick delivered through the
-    # durable subscription on MARKET.DATA.PRICES. The message is
-    # acknowledged only after it has been successfully bound to a
-    # PriceTick record and processed; if either step fails, the message is
-    # left unacknowledged so it is redelivered.
+    # shared durable subscription on MARKET.DATA.PRICES. Using a shared
+    # durable consumer type lets multiple instances of this service attach
+    # to the same subscription so message processing scales horizontally,
+    # while still retaining ticks published while all instances are
+    # offline. The message is acknowledged only after it has been
+    # successfully bound to a PriceTick record and processed; if either
+    # step fails, the message is left unacknowledged so it is redelivered.
     #
     # + message - the received IBM MQ message
     # + caller - the caller used to acknowledge the message

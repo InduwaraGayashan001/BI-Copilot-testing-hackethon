@@ -6,6 +6,15 @@ configurable string channel = ?;
 configurable string userID = ?;
 configurable string password = ?;
 
+// TLS truststore holding the certificate(s) trusted for the IBM MQ server's
+// TLS handshake.
+configurable string truststorePath = ?;
+configurable string truststorePassword = ?;
+
+// SSL/TLS cipher suite pinned for the connection. Defaults to a modern
+// TLS 1.3 cipher suite. See connections.bal for the alternatives considered.
+configurable string sslCipherSuite = "TLS_AES_256_GCM_SHA384";
+
 // Topic on which market data price ticks are published.
 configurable string marketDataTopicName = "MARKET.DATA.PRICES";
 
