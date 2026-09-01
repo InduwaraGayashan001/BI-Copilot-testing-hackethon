@@ -3,20 +3,9 @@ import ballerinax/ibm.ibmmq;
 // IBM MQ persistence value indicating the message survives queue manager restarts.
 const int MQ_PERSISTENCE_PERSISTENT = 1;
 
-// Builds the RFH2 header carrying routing name-value pairs derived from the
-// payment instruction so downstream routers can direct the message without
-// parsing the payload.
-function buildRoutingHeader(PaymentInstruction paymentInstruction) returns ibmmq:MQRFH2 => {
-    fieldValues: table [
-        {folder: "routing", 'field: "scheme", value: paymentInstruction.scheme},
-        {folder: "routing", 'field: "originatingBranch", value: paymentInstruction.originatingBranch}
-    ]
-};
-
 // Maps a PaymentInstruction into an IBM MQ message, setting the correlation ID,
-// priority, persistence, expiry, custom message properties carrying the
-// scheme and originating branch, and an RFH2 header carrying routing
-// name-value pairs.
+// priority, persistence, expiry, and custom message properties carrying the
+// routing information (scheme and originating branch).
 function mapToPaymentInstructionMessage(PaymentInstruction paymentInstruction, byte[] correlationId) returns ibmmq:Message => {
     payload: paymentInstruction.toJsonString().toBytes(),
     correlationId: correlationId,
@@ -26,8 +15,7 @@ function mapToPaymentInstructionMessage(PaymentInstruction paymentInstruction, b
     properties: {
         "scheme": {value: paymentInstruction.scheme},
         "originatingBranch": {value: paymentInstruction.originatingBranch}
-    },
-    headers: [buildRoutingHeader(paymentInstruction)]
+    }
 };
 
 // Maps a raw IBM MQ message read from PAYMENT.RESPONSES into a PaymentResponse.
