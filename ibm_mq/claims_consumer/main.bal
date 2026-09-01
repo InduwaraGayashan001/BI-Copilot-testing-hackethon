@@ -3,23 +3,22 @@ import ballerinax/ibm.ibmmq;
 
 @ibmmq:ServiceConfig {
     queueName: claimsInboundQueueName,
-    sessionAckMode: ibmmq:SESSION_TRANSACTED
+    sessionAckMode: ibmmq:CLIENT_ACKNOWLEDGE
 }
 service ibmmq:Service on claimsInboundListener {
 
-    # Handles an incoming claim submission message on a transacted session.
-    # Messages that have exceeded the maximum delivery attempts are treated
-    # as poison messages: they are routed to CLAIMS.DLQ with the failure
-    # reason and attempt count as properties, and the transaction is
-    # committed so the claim leaves the input queue. Otherwise, the
-    # transaction is committed through the caller only after the claim has
-    # been processed, the audit entry has been written, and the accepted
-    # claim has been published to CLAIMS.ACCEPTED; any failure rolls back
-    # the transaction so the claim is redelivered.
+    # Handles an incoming claim submission message under client
+    # acknowledgement. Messages that have exceeded the maximum delivery
+    # attempts are treated as poison messages: they are routed to
+    # CLAIMS.DLQ with the failure reason and attempt count as properties,
+    # and then acknowledged so the claim leaves the input queue. Otherwise,
+    # the message is acknowledged only after the claim has been processed
+    # and the audit entry has been appended to the audit log; if either
+    # step fails, the message is left unacknowledged so it is redelivered.
     #
     # + message - the received IBM MQ message
-    # + caller - the caller used to commit or roll back the transaction
-    # + return - an error if the commit or rollback itself fails
+    # + caller - the caller used to acknowledge the message
+    # + return - an error if the acknowledgement itself fails
     remote function onMessage(ibmmq:Message message, ibmmq:Caller caller) returns error? {
         int deliveryCount = recordDeliveryAttempt(message);
 
@@ -41,21 +40,15 @@ service ibmmq:Service on claimsInboundListener {
                     + auditResult.message(), caller);
         }
 
-        ibmmq:Message claimAcceptedMessage = mapToClaimAcceptedMessage(claimSubmission);
-        ibmmq:Error? publishResult = claimsAcceptedTopic->send(claimAcceptedMessage);
-        if publishResult is ibmmq:Error {
-            return handleFailedClaim(message, deliveryCount, "Failed to publish the accepted claim: "
-                    + publishResult.message(), caller);
-        }
-
-        ibmmq:Error? commitResult = caller->'commit();
-        if commitResult is ibmmq:Error {
-            log:printError("Failed to commit the transaction", commitResult,
+        ibmmq:Error? acknowledgeResult = caller->acknowledge(message);
+        if acknowledgeResult is ibmmq:Error {
+            log:printError("Failed to acknowledge the claim submission", acknowledgeResult,
                     claimId = claimSubmission.claimId);
-            return commitResult;
+            return acknowledgeResult;
         }
 
-        log:printInfo("Claim submission committed", claimId = claimSubmission.claimId);
+        clearDeliveryAttempts(message);
+        log:printInfo("Claim submission acknowledged", claimId = claimSubmission.claimId);
     }
 
     # Handles runtime errors that occur while receiving or dispatching
@@ -70,8 +63,8 @@ service ibmmq:Service on claimsInboundListener {
 // Handles a claim that failed to be processed. Once the delivery count
 // exceeds the configured maximum, the claim is considered a poison message:
 // it is put on CLAIMS.DLQ with the failure reason and attempt count as
-// properties, and the transaction is committed so it leaves CLAIMS.INBOUND.
-// Otherwise, the transaction is rolled back so the claim is redelivered.
+// properties, and then acknowledged so it leaves CLAIMS.INBOUND. Otherwise,
+// the message is left unacknowledged so it is redelivered.
 function handleFailedClaim(ibmmq:Message originalMessage, int deliveryCount, string failureReason,
         ibmmq:Caller caller) returns error? {
     log:printError(failureReason, deliveryCount = deliveryCount);
@@ -81,29 +74,18 @@ function handleFailedClaim(ibmmq:Message originalMessage, int deliveryCount, str
         ibmmq:Error? putResult = claimsDlq->put(deadLetterMessage);
         if putResult is ibmmq:Error {
             log:printError("Failed to put the claim on CLAIMS.DLQ", putResult);
-            ibmmq:Error? rollbackResult = caller->'rollback();
-            if rollbackResult is ibmmq:Error {
-                log:printError("Failed to roll back the transaction", rollbackResult);
-                return rollbackResult;
-            }
             return;
         }
 
-        ibmmq:Error? commitResult = caller->'commit();
-        if commitResult is ibmmq:Error {
-            log:printError("Failed to commit the transaction after routing the claim to CLAIMS.DLQ", commitResult);
-            return commitResult;
+        ibmmq:Error? acknowledgeResult = caller->acknowledge(originalMessage);
+        if acknowledgeResult is ibmmq:Error {
+            log:printError("Failed to acknowledge the claim after routing it to CLAIMS.DLQ", acknowledgeResult);
+            return acknowledgeResult;
         }
 
         clearDeliveryAttempts(originalMessage);
         log:printWarn("Claim routed to CLAIMS.DLQ after exceeding the maximum delivery attempts",
                 deliveryCount = deliveryCount, failureReason = failureReason);
         return;
-    }
-
-    ibmmq:Error? rollbackResult = caller->'rollback();
-    if rollbackResult is ibmmq:Error {
-        log:printError("Failed to roll back the transaction", rollbackResult);
-        return rollbackResult;
     }
 }

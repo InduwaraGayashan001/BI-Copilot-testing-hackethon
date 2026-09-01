@@ -47,15 +47,5 @@ function mapToDeadLetterMessage(ibmmq:Message claimMessage, string failureReason
     }
 };
 
-// Maps an accepted claim submission into a message to be published on the
-// CLAIMS.ACCEPTED topic for downstream subscribers.
-function mapToClaimAcceptedMessage(ClaimSubmission claimSubmission) returns ibmmq:Message => {
-    payload: claimSubmission.toJsonString().toBytes(),
-    persistence: MQ_PERSISTENCE_PERSISTENT,
-    properties: {
-        "claimId": {value: claimSubmission.claimId}
-    }
-};
-
 // IBM MQ persistence value indicating the message survives queue manager restarts.
 const int MQ_PERSISTENCE_PERSISTENT = 1;

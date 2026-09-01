@@ -14,13 +14,6 @@ final ibmmq:Queue claimsDlq = check claimsQueueManager.accessQueue(
     ibmmq:MQOO_OUTPUT
 );
 
-final ibmmq:Topic claimsAcceptedTopic = check claimsQueueManager.accessTopic(
-    claimsAcceptedTopicName,
-    claimsAcceptedTopicString,
-    ibmmq:OPEN_AS_PUBLICATION,
-    ibmmq:MQOO_OUTPUT
-);
-
 listener ibmmq:Listener claimsInboundListener = check new (
     name = queueManagerName,
     host = host,
