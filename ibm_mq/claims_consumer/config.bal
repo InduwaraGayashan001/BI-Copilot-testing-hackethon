@@ -8,3 +8,14 @@ configurable string password = ?;
 
 // Inbound queue on which claim submissions are received.
 configurable string claimsInboundQueueName = "CLAIMS.INBOUND";
+
+// Dead-letter queue for claims that exceed the maximum delivery attempts.
+configurable string claimsDlqName = "CLAIMS.DLQ";
+
+// Topic on which accepted claims are published for downstream subscribers.
+configurable string claimsAcceptedTopicName = "CLAIMS.ACCEPTED";
+configurable string claimsAcceptedTopicString = "CLAIMS.ACCEPTED";
+
+// Maximum number of delivery attempts before a claim is treated as a
+// poison message and routed to the dead-letter queue.
+configurable int maxDeliveryAttempts = 5;
