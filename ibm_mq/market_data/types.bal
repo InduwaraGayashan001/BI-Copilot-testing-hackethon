@@ -7,3 +7,14 @@ public type PriceTick record {|
     string timestamp;
 |};
 
+// Rolling tick count for a single instrument class.
+public type InstrumentClassTickCount record {|
+    string instrumentClass;
+    int tickCount;
+|};
+
+// Response payload for GET /marketdata/stats.
+public type MarketDataStats record {|
+    InstrumentClassTickCount[] instrumentClassCounts;
+|};
+
